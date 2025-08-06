@@ -236,3 +236,184 @@ The `close_threshold` and `far_threshold` values are critical for accuracy.
     *   Set `far_threshold` to a value slightly lower than your ideal area.
     *   Set `close_threshold` to a value slightly higher than your ideal area.
 5.  **Update Function Call**: You can either hardcode these new thresholds in the Python function's signature or pass them as arguments from your Kotlin code for more dynamic control.
+
+
+
+---
+
+
+Excellent! That data is incredibly useful and is the key to creating a much more robust and specific detection system. Based on your real-world measurements, we can now refine the logic to not only determine proximity but also to reject objects that are clearly not a single finger.
+
+Here is the modified Python function incorporating your findings.
+
+### Refined Python Function (`finger_analyzer.py`)
+
+This version introduces a more detailed logic to classify the detected object. It uses your data to create specific zones: "Not Detected" (noise), the valid "Finger Zone" (subdivided into Far, Good, Close), and "Too Large" (likely a palm or other object).
+
+```python
+# In src/main/python/finger_analyzer.py
+import cv2
+import numpy as np
+
+def analyze_finger_frame(
+    nv21_bytes, 
+    width, 
+    height,
+    # --- New, more descriptive thresholds based on your data ---
+    min_finger_area=300000,   # Anything below this is considered noise or not a finger.
+    max_finger_area=900000,   # Anything above this is a palm or too large to be a finger.
+    good_distance_min=500000, # The ideal "Good Distance" starts at this area.
+    good_distance_max=750000  # The ideal "Good Distance" ends at this area.
+):
+    """
+    Analyzes an NV21 frame to detect a single finger and its proximity, rejecting non-finger objects.
+    
+    Args:
+        nv21_bytes (bytearray): Image data from Android in NV21 format.
+        width (int): Image width.
+        height (int): Image height.
+        min_finger_area (int): The minimum contour area to be considered a finger.
+        max_finger_area (int): The maximum contour area for a finger.
+        good_distance_min (int): The start of the "Good Distance" area range.
+        good_distance_max (int): The end of the "Good Distance" area range.
+
+    Returns:
+        dict: A dictionary with the analysis result, including status and bounding box.
+    """
+    try:
+        # Step 1: Convert NV21 to BGR format
+        yuv_image = np.frombuffer(nv21_bytes, dtype=np.uint8).reshape(height + height // 2, width)
+        bgr_frame = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
+
+        # Step 2: Skin color segmentation in HSV color space
+        hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+        lower_skin = np.array([0, 48, 80], dtype=np.uint8)
+        upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+        skin_mask = cv2.inRange(hsv_frame, lower_skin, upper_skin)
+
+        # Step 3: Clean up mask and find contours
+        skin_mask = cv2.GaussianBlur(skin_mask, (5, 5), 0)
+        skin_mask = cv2.erode(skin_mask, None, iterations=2)
+        skin_mask = cv2.dilate(skin_mask, None, iterations=2)
+        contours, _ = cv2.findContours(skin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return {"status": "Not Detected", "box": None, "area": 0}
+
+        # Step 4: Analyze the largest contour based on the new logic
+        finger_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(finger_contour)
+        x, y, w, h = cv2.boundingRect(finger_contour)
+        bounding_box = [int(x), int(y), int(w), int(h)]
+
+        # --- REFINED LOGIC ---
+        if area < min_finger_area:
+            # Area is too small, likely noise or a distant, non-target object.
+            status = "Not Detected"
+            bounding_box = None # Don't return a box for noise
+        elif area > max_finger_area:
+            # Area is too large, likely a palm, face, or the finger is smashed against the lens.
+            status = "Palm / Too Large"
+        else:
+            # The area is within the valid finger range. Now determine proximity.
+            if area < good_distance_min:
+                status = "Too Far"
+            elif area > good_distance_max:
+                status = "Too Close"
+            else:
+                status = "Good Distance"
+        
+        return {"status": status, "box": bounding_box, "area": int(area)}
+
+    except Exception as e:
+        return {"status": "Error", "box": None, "error_message": str(e), "area": 0}
+
+```
+
+### Explanation of the Changes and Logic
+
+1.  **Thresholds Based on Your Data**:
+    *   `min_finger_area = 300000`: We now treat anything with an area less than 300,000 as "Not Detected." This effectively filters out random small objects and noise.
+    *   `max_finger_area = 900000`: We now have an upper limit. If the detected object has an area greater than 900,000, we classify it as `"Palm / Too Large"`. This is the key change to prevent detecting a full hand.
+
+2.  **The "Finger Zone"**:
+    The logic now first checks if the detected object is within the valid finger area range (`300,000` to `900,000`). Only if it's inside this range do we proceed to classify its distance.
+
+3.  **Granular Distance Classification**:
+    Within the "Finger Zone," I've defined a "Good Distance" range. You can easily adjust this.
+    *   **Area between 300,000 and 500,000**: Classified as `"Too Far"`.
+    *   **Area between 500,000 and 750,000**: Classified as `"Good Distance"`. This is your target zone for capturing a clear fingerprint.
+    *   **Area between 750,000 and 900,000**: Classified as `"Too Close"`.
+
+4.  **Returning Area**: I've added the `area` to the return dictionary. This is extremely helpful for debugging on the Android side. You can log this value to further fine-tune your thresholds without changing the Python code.
+
+### How to Verify the Bounding Box
+
+Since you can't see the video output directly, the best way to verify the bounding box is to **draw it on an overlay in your Android app**. This is the standard practice for this kind of task.
+
+Here’s the conceptual workflow in your Android code:
+
+1.  **Create a Custom Overlay View**: In your XML layout, place a custom `View` on top of your `PreviewView` for the camera. Make its background transparent.
+
+    ```xml
+    <FrameLayout ...>
+        <androidx.camera.view.PreviewView
+            android:id="@+id/camera_preview"
+            ... />
+        <com.your.package.OverlayView
+            android:id="@+id/overlay_view"
+            ... />
+    </FrameLayout>
+    ```
+
+2.  **Write the `OverlayView` Class**: This class will have a method to receive the bounding box and will handle drawing it.
+
+    ```kotlin
+    class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs) {
+        private var boxToDraw: Rect? = null
+        private val paint = Paint().apply {
+            color = Color.GREEN
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+        }
+
+        // Call this method from your analyzer's callback
+        fun setBoundingBox(newBox: Rect?) {
+            // IMPORTANT: You may need to transform coordinates from the image
+            // analysis resolution to the view's resolution here.
+            // For now, let's assume they are the same for simplicity.
+            boxToDraw = newBox
+            invalidate() // Triggers a redraw
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            boxToDraw?.let {
+                canvas.drawRect(it, paint)
+            }
+        }
+    }
+    ```
+
+3.  **Update the UI from your Analyzer**: In your `ImageAnalysis.Analyzer` callback, parse the box and pass it to your overlay.
+
+    ```kotlin
+    // Inside your ImageAnalysis listener in the Activity/Fragment
+    private fun updateUi(status: String, box: List<PyObject>?, area: Int) {
+        statusTextView.text = "$status (Area: $area)"
+
+        if (box != null) {
+            val rect = Rect(
+                box[0].toInt(),
+                box[1].toInt(),
+                box[0].toInt() + box[2].toInt(), // x + width
+                box[1].toInt() + box[3].toInt()  // y + height
+            )
+            overlayView.setBoundingBox(rect)
+        } else {
+            overlayView.setBoundingBox(null)
+        }
+    }
+    ```
+
+By implementing this, you will see a green rectangle drawn around the detected finger in real-time, giving you perfect visual confirmation that the bounding box is correct.
