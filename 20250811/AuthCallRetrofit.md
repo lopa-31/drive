@@ -611,3 +611,300 @@ class AuthViewModel @Inject constructor(
 ```
 
 This setup provides a clean, scalable, and testable architecture for your Aadhaar authentication feature using modern Android development best practices.
+
+
+
+
+---
+---
+---
+---
+
+Of course. Creating the `Pid` (Personal Identity Data) block is the first major step in building the authentication request. The `Pid` block contains the demographic and/or biometric data you want to verify.
+
+Based on the API specification (Section 3.3) and your requirement to include fingerprint "embeddings", we will create the necessary Kotlin data classes with Jackson XML annotations and then a factory class to build the `Pid` object and serialize it to XML.
+
+---
+
+### Step 1: Kotlin Data Classes for the PID Block
+
+Here are the data classes that map directly to the `<Pid>` XML structure. We will use Jackson annotations to control the serialization. Note the use of `isAttribute=true` for XML attributes and `@JacksonXmlElementWrapper` for lists.
+
+`PidDataModels.kt`
+```kotlin
+import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.annotation.JsonValue
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlRootElement
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlText
+
+// Set the root element name to "Pid"
+@JacksonXmlRootElement(localName = "Pid")
+// Only include properties that are not null during serialization
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pid(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ts: String,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ver: String = "2.0", // As per spec for this API version
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val wadh: String? = null, // Optional, for eKYC/Update APIs
+
+    @field:JacksonXmlProperty(localName = "Demo")
+    val demo: Demo? = null,
+
+    @field:JacksonXmlProperty(localName = "Bios")
+    val bios: Bios? = null,
+
+    @field:JacksonXmlProperty(localName = "Pv")
+    val pv: Pv? = null
+)
+
+data class Demo(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lang: String? = null, // Indian Language Code
+
+    @field:JacksonXmlProperty(localName = "Pi")
+    val pi: Pi? = null, // Personal Identity
+
+    @field:JacksonXmlProperty(localName = "Pa")
+    val pa: Pa? = null, // Personal Address
+
+    @field:JacksonXmlProperty(localName = "Pfa")
+    val pfa: Pfa? = null // Personal Full Address
+)
+
+data class Pi(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ms: String? = "E", // Matching Strategy (E=Exact)
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val mv: Int? = null, // Match Value
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val name: String? = null,
+
+    // ... other Pi attributes like gender, dob, dobt, age, phone, email, etc.
+)
+
+// You can create Pa and Pfa data classes similarly if needed.
+data class Pa( /* ... */)
+data class Pfa( /* ... */)
+
+data class Bios(
+    // This wrapper will contain one or more <Bio> elements
+    @field:JacksonXmlElementWrapper(useWrapping = false)
+    @field:JacksonXmlProperty(localName = "Bio")
+    val bioList: List<Bio>
+)
+
+data class Bio(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val type: BiometricType,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val posh: BiometricPosition,
+
+    // The 'bs' attribute is for registered devices, which is mandatory for biometrics
+    @field:JacksonXmlProperty(isAttribute = true)
+    val bs: String? = null, // Base64 encoded signed hash of bio record
+
+    // The Base64 encoded biometric data (your fingerprint embedding)
+    @field:JacksonXmlText
+    val value: String
+)
+
+data class Pv(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val otp: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val pin: String? = null
+)
+
+// Enums for type-safety and clarity
+enum class BiometricType {
+    FMR, // Finger Minutiae Record
+    FIR, // Finger Image Record
+    IIR, // Iris Image Record
+    FID; // Face Image Data
+}
+
+enum class BiometricPosition(val xmlValue: String) {
+    LEFT_IRIS("LEFT_IRIS"),
+    RIGHT_IRIS("RIGHT_IRIS"),
+    LEFT_INDEX("LEFT_INDEX"),
+    LEFT_LITTLE("LEFT_LITTLE"),
+    LEFT_MIDDLE("LEFT_MIDDLE"),
+    LEFT_RING("LEFT_RING"),
+    LEFT_THUMB("LEFT_THUMB"),
+    RIGHT_INDEX("RIGHT_INDEX"),
+    RIGHT_LITTLE("RIGHT_LITTLE"),
+    RIGHT_MIDDLE("RIGHT_MIDDLE"),
+    RIGHT_RING("RIGHT_RING"),
+    RIGHT_THUMB("RIGHT_THUMB"),
+    FACE("FACE"),
+    UNKNOWN("UNKNOWN");
+
+    @JsonValue
+    fun toValue(): String = xmlValue
+}
+```
+
+---
+
+### Step 2: Factory for Creating the PID XML
+
+Now, let's create a factory class that takes your biometric data and other details, constructs the `Pid` object, and serializes it to an XML string. This keeps the creation logic clean and separate.
+
+`PidFactory.kt`
+```kotlin
+import android.util.Base64
+import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.dataformat.xml.XmlMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import java.text.SimpleDateFormat
+import java.util.*
+
+/**
+ * A factory to create the PID XML block for Aadhaar authentication.
+ */
+class PidFactory {
+
+    // Configure the XML mapper to write XML and ignore null fields
+    private val xmlMapper = XmlMapper().apply {
+        registerKotlinModule()
+        setSerializationInclusion(JsonInclude.Include.NON_NULL)
+    }
+
+    /**
+     * Creates the complete PID block as an XML string.
+     *
+     * @param biometricInfo A list of biometric data to include.
+     * @param demographicInfo Optional demographic data.
+     * @return A tuple containing the generated timestamp and the PID XML string.
+     */
+    fun createPidXml(
+        biometricInfo: List<BiometricData>,
+        demographicInfo: DemographicInfo? = null
+    ): Pair<String, String> {
+        // 1. Generate the current timestamp in the required ISO 8601 format
+        val timeZone = TimeZone.getTimeZone("UTC")
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+            this.timeZone = timeZone
+        }
+        val timestamp = dateFormat.format(Date())
+
+        // 2. Prepare the biometric part (<Bios>)
+        val bioList = biometricInfo.map { info ->
+            Bio(
+                type = info.type,
+                posh = info.position,
+                // The raw byte array of your embedding is Base64 encoded here
+                value = Base64.encodeToString(info.embedding, Base64.NO_WRAP)
+            )
+        }
+        val bios = if (bioList.isNotEmpty()) Bios(bioList) else null
+
+        // 3. Prepare the demographic part (<Demo>) if provided
+        val demo = demographicInfo?.let {
+            Demo(
+                pi = Pi(
+                    name = it.name,
+                    // ... map other demo fields
+                )
+            )
+        }
+
+        // 4. Construct the top-level Pid object
+        val pid = Pid(
+            ts = timestamp,
+            bios = bios,
+            demo = demo
+            // The 'ver' attribute has a default value in the data class
+        )
+
+        // 5. Serialize the Pid object to an XML string
+        val pidXml = xmlMapper.writerWithDefaultPrettyPrinter().writeValueAsString(pid)
+
+        return Pair(timestamp, pidXml)
+    }
+}
+
+// Helper data classes to pass information to the factory
+data class BiometricData(
+    val type: BiometricType,
+    val position: BiometricPosition,
+    val embedding: ByteArray // This is your raw fingerprint embedding data
+)
+
+data class DemographicInfo(
+    val name: String? = null,
+    // ... add other demographic fields as needed
+)
+```
+
+---
+
+### Step 3: Example Usage
+
+Here’s how you would use the `PidFactory` to generate the PID XML string from your fingerprint embedding.
+
+```kotlin
+fun generatePidExample() {
+    val pidFactory = PidFactory()
+
+    // 1. Your fingerprint embedding as a ByteArray.
+    // This is a placeholder. You will get this from your fingerprint scanner SDK.
+    val myFingerprintEmbedding = "raw-fingerprint-data-bytes".toByteArray()
+
+    // 2. Create the BiometricData object.
+    // The user has placed their right index finger on the scanner.
+    // You are submitting it as a Finger Minutiae Record (FMR).
+    val biometricData = BiometricData(
+        type = BiometricType.FMR,
+        position = BiometricPosition.RIGHT_INDEX,
+        embedding = myFingerprintEmbedding
+    )
+
+    // You can also add demographics if your authentication requires it.
+    val demographicInfo = DemographicInfo(name = "Suresh Kumar")
+
+    // 3. Generate the PID XML.
+    // The result is a Pair containing the timestamp and the XML string.
+    val (timestamp, pidXml) = pidFactory.createPidXml(
+        biometricInfo = listOf(biometricData),
+        demographicInfo = demographicInfo
+    )
+
+    println("--- Generated Timestamp ---")
+    println(timestamp)
+    println("\n--- Generated PID XML ---")
+    println(pidXml)
+
+    // THIS `pidXml` AND `timestamp` are what you pass to the AadhaarCryptoHelper
+    // and AuthRequestManager from the previous answer to be encrypted and sent.
+}
+```
+
+**Expected Output from the Example:**
+
+```
+--- Generated Timestamp ---
+2023-10-27T14:30:55
+
+--- Generated PID XML ---
+<Pid ts="2023-10-27T14:30:55" ver="2.0">
+  <Demo>
+    <Pi ms="E" name="Suresh Kumar"/>
+  </Demo>
+  <Bios>
+    <Bio type="FMR" posh="RIGHT_INDEX">cmF3LWZpbmdlcnByaW50LWRhdGEtYnl0ZXM=</Bio>
+  </Bios>
+</Pid>
+```
+
+Now you have a robust way to generate the PID block. This `pidXml` string is the input for the encryption process we discussed earlier.
