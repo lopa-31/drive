@@ -378,3 +378,236 @@ suspend fun performAadhaarAuth() {
 5.  **Sign Request:** (Crucial for production) The XML returned from the previous step *must* be digitally signed.
 6.  **Execute Call:** Use Retrofit to `POST` the final, signed XML to the correct Aadhaar API endpoint, providing the required path parameters.
 7.  **Handle Response:** The response will also be a digitally signed XML. You must verify its signature using UIDAI's public key to ensure it's authentic before trusting the `ret="y/n"` result.
+
+---
+---
+---
+---
+
+
+Of course. Here is a complete Dagger Hilt module that provides all the necessary dependencies for the Aadhaar authentication flow, including the Retrofit client setup.
+
+This module will provide:
+1.  `OkHttpClient` with a logging interceptor for debugging.
+2.  The `Retrofit` instance configured for the Aadhaar API.
+3.  The `AadhaarApiService` interface.
+4.  The `AadhaarCryptoHelper` for all cryptographic operations.
+5.  The `AuthRequestManager` to orchestrate the request creation.
+
+### Prerequisites
+
+1.  Make sure you have the Hilt dependencies in your `build.gradle.kts` files.
+
+    **Project `build.gradle.kts`:**
+    ```kotlin
+    plugins {
+        // ...
+        id("com.google.dagger.hilt.android") version "2.48" apply false
+    }
+    ```
+
+    **Module `build.gradle.kts`:**
+    ```kotlin
+    plugins {
+        // ...
+        id("com.google.dagger.hilt.android")
+        kotlin("kapt")
+    }
+
+    // ...
+
+    dependencies {
+        // ... other dependencies
+        implementation("com.google.dagger:hilt-android:2.48")
+        kapt("com.google.dagger:hilt-compiler:2.48")
+    }
+    ```
+2.  Create a custom `Application` class and annotate it with `@HiltAndroidApp`.
+
+    `MyApplication.kt`
+    ```kotlin
+    import android.app.Application
+    import dagger.hilt.android.HiltAndroidApp
+
+    @HiltAndroidApp
+    class MyApplication : Application()
+    ```
+    Don't forget to register this class in your `AndroidManifest.xml`:
+    ```xml
+    <application
+        android:name=".MyApplication"
+        ... >
+        <!-- Activities, etc. -->
+    </application>
+    ```
+
+---
+
+### The Dagger Hilt Module
+
+Create a new file, for example `AppModule.kt`, in your dependency injection package.
+
+`AppModule.kt`
+```kotlin
+import android.content.Context
+import com.your.app.package.name.R // IMPORTANT: Replace with your app's R file path
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.scalars.ScalarsConverterFactory
+import javax.inject.Singleton
+
+// The base URL for the Aadhaar pre-production authentication environment
+private const val AADHAAR_AUTH_BASE_URL = "https://auth.uidai.gov.in/"
+
+@Module
+@InstallIn(SingletonComponent::class)
+object AppModule {
+
+    /**
+     * Provides a singleton OkHttpClient instance. Includes a logging interceptor
+     * for easy debugging of network requests and responses in debug builds.
+     */
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BODY
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
+        }
+        return OkHttpClient.Builder()
+            .addInterceptor(loggingInterceptor)
+            .build()
+    }
+
+    /**
+     * Provides a singleton Retrofit instance configured for the Aadhaar API.
+     * It uses the ScalarsConverterFactory because we send and receive raw XML strings.
+     */
+    @Provides
+    @Singleton
+    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(AADHAAR_AUTH_BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(ScalarsConverterFactory.create())
+            .build()
+    }
+
+    /**
+     * Provides the Retrofit service interface for Aadhaar authentication.
+     */
+    @Provides
+    @Singleton
+    fun provideAadhaarApiService(retrofit: Retrofit): AadhaarApiService {
+        return retrofit.create(AadhaarApiService::class.java)
+    }
+
+    /**
+     * Provides the helper class for all Aadhaar-related cryptographic operations.
+     * It requires the ApplicationContext to access the UIDAI public key certificate
+     * stored in the res/raw directory.
+     */
+    @Provides
+    @Singleton
+    fun provideAadhaarCryptoHelper(@ApplicationContext context: Context): AadhaarCryptoHelper {
+        // Ensure you have the 'uidai_auth_preprod.cer' file in your `res/raw` folder
+        return AadhaarCryptoHelper(context, R.raw.uidai_auth_preprod)
+    }
+
+    /**
+     * Provides the manager class that orchestrates the creation of the
+     * final, encrypted, and ready-to-be-signed authentication request.
+     */
+    @Provides
+    @Singleton
+    fun provideAuthRequestManager(cryptoHelper: AadhaarCryptoHelper): AuthRequestManager {
+        return AuthRequestManager(cryptoHelper)
+    }
+}
+```
+
+---
+
+### How to Use the Injected Dependencies
+
+Now, you can easily inject these provided classes into your ViewModels, Repositories, or other Hilt-managed classes.
+
+Here is an example of how you would use it in a ViewModel:
+
+`AuthViewModel.kt`
+```kotlin
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.your.app.package.name.models.Auth // Replace with your model path
+import com.your.app.package.name.models.Pid // Replace with your model path
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class AuthViewModel @Inject constructor(
+    private val apiService: AadhaarApiService,
+    private val requestManager: AuthRequestManager
+) : ViewModel() {
+
+    fun performAadhaarAuth() {
+        viewModelScope.launch {
+            // 1. Populate your data models as before
+            val aadhaarNumber = "123456789012"
+            val pid = Pid(ts = "2023-10-27T12:00:00", ver = "2.0", /*... rest of data ...*/)
+            val auth = Auth(
+                uid = aadhaarNumber,
+                rc = "Y",
+                tid = "registered",
+                ac = "public", // Your AUA Code
+                sa = "public", // Your Sub-AUA Code
+                ver = "2.5",
+                txn = "MyApp-Txn-12345",
+                lk = "YOUR_AUA_LICENSE_KEY",
+                // Dummy values, will be replaced by the manager
+                skey = Skey("", ""), 
+                hmac = "", 
+                data = Data("", "")
+            )
+
+            // 2. Prepare the request XML. The requestManager is now injected by Hilt.
+            val finalRequestXml = requestManager.prepareAuthRequestXml(pid, auth)
+            // REMEMBER: In production, you must digitally sign `finalRequestXml` here.
+
+            // 3. Make the API call using the injected apiService
+            try {
+                val response = apiService.authenticate(
+                    version = "2.5",
+                    auaCode = "public",
+                    uid0 = aadhaarNumber.substring(0, 1),
+                    uid1 = aadhaarNumber.substring(1, 2),
+                    asaLicenseKey = "YOUR_ASA_LICENSE_KEY",
+                    requestXml = finalRequestXml
+                )
+
+                if (response.isSuccessful) {
+                    val responseXml = response.body()
+                    println("Success: $responseXml")
+                    // TODO: Verify the signature of the response and handle it.
+                } else {
+                    val errorBody = response.errorBody()?.string()
+                    println("Error: ${response.code()} - $errorBody")
+                }
+            } catch (e: Exception) {
+                println("Network or other exception: ${e.message}")
+            }
+        }
+    }
+}
+```
+
+This setup provides a clean, scalable, and testable architecture for your Aadhaar authentication feature using modern Android development best practices.
