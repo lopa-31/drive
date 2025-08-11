@@ -908,3 +908,229 @@ fun generatePidExample() {
 ```
 
 Now you have a robust way to generate the PID block. This `pidXml` string is the input for the encryption process we discussed earlier.
+
+---
+---
+---
+
+
+```kotlin
+import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.annotation.JsonValue
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlRootElement
+import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlText
+
+@JacksonXmlRootElement(localName = "Pid")
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pid(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ts: String,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ver: String = "2.0",
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val wadh: String? = null,
+
+    @field:JacksonXmlProperty(localName = "Demo")
+    val demo: Demo? = null,
+
+    @field:JacksonXmlProperty(localName = "Bios")
+    val bios: Bios? = null,
+
+    @field:JacksonXmlProperty(localName = "Pv")
+    val pv: Pv? = null
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Demo(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lang: String? = null,
+
+    @field:JacksonXmlProperty(localName = "Pi")
+    val pi: Pi? = null,
+
+    @field:JacksonXmlProperty(localName = "Pa")
+    val pa: Pa? = null,
+
+    @field:JacksonXmlProperty(localName = "Pfa")
+    val pfa: Pfa? = null
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pi(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ms: String? = "E",
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val mv: Int? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val name: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lname: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lmv: Int? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val gender: Gender? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val dob: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val dobt: Dobt? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val age: Int? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val phone: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val email: String? = null
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pa(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ms: String? = "E",
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val co: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val house: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val street: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lm: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val loc: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val vtc: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val subdist: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val dist: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val state: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val country: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val pc: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val po: String? = null
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pfa(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val ms: String? = "E",
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val mv: Int? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val av: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lav: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val lmv: Int? = null
+)
+
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Bios(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val dih: String? = null,
+
+    @field:JacksonXmlElementWrapper(useWrapping = false)
+    @field:JacksonXmlProperty(localName = "Bio")
+    val bioList: List<Bio>
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Bio(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val type: BiometricType,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val posh: BiometricPosition,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val bs: String? = null,
+
+    @field:JacksonXmlText
+    val value: String
+)
+
+@JsonInclude(JsonInclude.Include.NON_NULL)
+data class Pv(
+    @field:JacksonXmlProperty(isAttribute = true)
+    val otp: String? = null,
+
+    @field:JacksonXmlProperty(isAttribute = true)
+    val pin: String? = null
+)
+
+enum class BiometricType(val value: String) {
+    FMR("FMR"),
+    FIR("FIR"),
+    IIR("IIR"),
+    FID("FID");
+
+    @JsonValue fun toValue(): String = value
+}
+
+enum class BiometricPosition(val xmlValue: String) {
+    LEFT_IRIS("LEFT_IRIS"),
+    RIGHT_IRIS("RIGHT_IRIS"),
+    LEFT_INDEX("LEFT_INDEX"),
+    LEFT_LITTLE("LEFT_LITTLE"),
+    LEFT_MIDDLE("LEFT_MIDDLE"),
+    LEFT_RING("LEFT_RING"),
+    LEFT_THUMB("LEFT_THUMB"),
+    RIGHT_INDEX("RIGHT_INDEX"),
+    RIGHT_LITTLE("RIGHT_LITTLE"),
+    RIGHT_MIDDLE("RIGHT_MIDDLE"),
+    RIGHT_RING("RIGHT_RING"),
+    RIGHT_THUMB("RIGHT_THUMB"),
+    FACE("FACE"),
+    UNKNOWN("UNKNOWN");
+
+    @JsonValue fun toValue(): String = xmlValue
+}
+
+enum class Gender(val value: String) {
+    MALE("M"),
+    FEMALE("F"),
+    TRANSGENDER("T");
+
+    @JsonValue fun toValue(): String = value
+}
+
+enum class Dobt(val value: String) {
+    VERIFIED("V"),
+    DECLARED("D"),
+    APPROXIMATE("A");
+
+    @JsonValue fun toValue(): String = value
+}
+```
