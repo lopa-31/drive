@@ -137,6 +137,10 @@ class MyImageAvailableListener : ImageReader.OnImageAvailableListener {
 4.  **Offload Processing**: The `onImageAvailable` callback runs on a critical thread. Perform the conversion and any subsequent heavy processing on a background thread (e.g., using a `HandlerThread` or Coroutines) to avoid blocking the camera pipeline.
 
 ---
+---
+---
+
+# 2
 
 Of course. You are right to look into a native library solution for the absolute lowest latency. The image you provided correctly identifies Google's `libyuv` as the premier, highly-optimized library for this exact task.
 
@@ -362,3 +366,266 @@ class MyImageAvailableListener : ImageReader.OnImageAvailableListener {
 ```
 
 By following these steps, you will have the absolute fastest method for YUV to NV21 conversion running in your Android app, minimizing latency and ensuring your real-time processing pipeline runs as smoothly as possible.
+
+
+---
+---
+---
+# 3
+
+Of course. If you are unable to download `libyuv`, I can provide you with a self-contained C++ implementation that you can use directly.
+
+This native C++ code performs the same high-speed conversion from a `YUV_420_888` `Image` object to an `NV21` byte array. It manually handles the memory planes and their strides, which is what makes it significantly faster than a pure Kotlin/Java implementation.
+
+Follow these steps to integrate the native C++ code into your Android project.
+
+### Step 1: Set Up NDK and CMake in Your Project
+
+First, ensure your project is configured for native C++ code.
+
+1.  **Install NDK and CMake:** In Android Studio, go to **Tools > SDK Manager > SDK Tools**. Check **NDK (Side by side)** and **CMake**, then click Apply.
+2.  **Link C++ to Gradle:** Open your module-level `build.gradle` (or `build.gradle.kts`) file and add the `externalNativeBuild` block.
+
+    **Groovy (`build.gradle`):**
+    ```groovy
+    android {
+        // ... other settings
+        externalNativeBuild {
+            cmake {
+                path "src/main/cpp/CMakeLists.txt"
+                version "3.22.1"
+            }
+        }
+    }
+    ```
+    **Kotlin DSL (`build.gradle.kts`):**
+    ```kotlin
+    android {
+        // ... other settings
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
+    }
+    ```
+
+### Step 2: Add the C++ Source and CMake Build Script
+
+1.  **Create the `cpp` Directory:** In your Android Studio project view, navigate to `app/src/main/`. Right-click and select **New > Directory**. Name it `cpp`.
+
+2.  **Create `CMakeLists.txt`:** Inside the new `cpp` directory, create a new file named `CMakeLists.txt` and paste the following content into it. This file tells the build system how to compile your C++ code.
+
+    ```cmake
+    # Sets the minimum version of CMake required.
+    cmake_minimum_required(VERSION 3.22.1)
+
+    # Defines our native library that will be called from Kotlin/Java.
+    # The output will be "libyuv_converter.so".
+    add_library(
+            yuv_converter
+            SHARED
+            yuv_converter.cpp) # The name of our C++ source file
+
+    # Find and link the Android logging library (optional, but good practice).
+    find_library(
+            log-lib
+            log)
+
+    # Link our library against the Android log library.
+    target_link_libraries(
+            yuv_converter
+            ${log-lib})
+    ```
+
+3.  **Create `yuv_converter.cpp`:** Inside the same `cpp` directory, create a new file named `yuv_converter.cpp`. Paste the C++ code below into this file. This is the core conversion logic.
+
+    ```cpp
+    #include <jni.h>
+
+    // This function performs the actual YUV_420_888 to NV21 conversion
+    void convert_yuv_420_888_to_nv21(
+            const uint8_t *y_pixel,
+            const uint8_t *u_pixel,
+            const uint8_t *v_pixel,
+            int32_t y_row_stride,
+            int32_t u_row_stride,
+            int32_t v_row_stride,
+            int32_t u_pixel_stride,
+            int32_t v_pixel_stride,
+            int width,
+            int height,
+            uint8_t *nv21_output) {
+
+        // Pointer to the start of the Y plane in the output buffer
+        uint8_t *y_out = nv21_output;
+
+        // Pointer to the start of the VU plane in the output buffer
+        uint8_t *vu_out = nv21_output + width * height;
+
+        // 1. Copy the Y plane
+        // If there is no padding, we can do a fast copy
+        if (y_row_stride == width) {
+            memcpy(y_out, y_pixel, width * height);
+        } else {
+            // If there is padding, we have to copy row by row
+            for (int i = 0; i < height; ++i) {
+                memcpy(y_out + i * width, y_pixel + i * y_row_stride, width);
+            }
+        }
+
+        // 2. Interleave the U and V planes into the VU plane
+        // The U and V planes have half the width and half the height of the Y plane
+        for (int row = 0; row < height / 2; ++row) {
+            for (int col = 0; col < width / 2; ++col) {
+                // Calculate the index for the VU plane in the output buffer
+                int vu_index = row * width + col * 2;
+
+                // The V plane comes first in NV21
+                vu_out[vu_index] = *(v_pixel + row * v_row_stride + col * v_pixel_stride);
+                // The U plane comes second
+                vu_out[vu_index + 1] = *(u_pixel + row * u_row_stride + col * u_pixel_stride);
+            }
+        }
+    }
+
+
+    extern "C" JNIEXPORT jbyteArray JNICALL
+    Java_com_your_package_name_YuvConverter_yuv420ToNv21Native( // <-- IMPORTANT: Change this package name
+            JNIEnv *env,
+            jobject /* this */,
+            jobject y_buffer,
+            jobject u_buffer,
+            jobject v_buffer,
+            jint y_row_stride,
+            jint u_row_stride,
+            jint v_row_stride,
+            jint u_pixel_stride,
+            jint v_pixel_stride,
+            jint width,
+            jint height) {
+
+        // Get direct access to the memory of the ByteBuffers
+        auto y_pixel = static_cast<uint8_t *>(env->GetDirectBufferAddress(y_buffer));
+        auto u_pixel = static_cast<uint8_t *>(env->GetDirectBufferAddress(u_buffer));
+        auto v_pixel = static_cast<uint8_t *>(env->GetDirectBufferAddress(v_buffer));
+
+        // Create the output Java byte array for the NV21 data
+        int nv21_size = width * height * 3 / 2;
+        jbyteArray nv21_output_array = env->NewByteArray(nv21_size);
+        auto nv21_output_ptr = env->GetByteArrayElements(nv21_output_array, nullptr);
+
+        // Call our conversion function
+        convert_yuv_420_888_to_nv21(
+                y_pixel, u_pixel, v_pixel,
+                y_row_stride, u_row_stride, v_row_stride,
+                u_pixel_stride, v_pixel_stride,
+                width, height,
+                reinterpret_cast<uint8_t *>(nv21_output_ptr)
+        );
+
+        // Release the native pointer back to the Java heap
+        env->ReleaseByteArrayElements(nv21_output_array, nv21_output_ptr, 0);
+
+        return nv21_output_array;
+    }
+    ```
+    **VERY IMPORTANT:** In the C++ code above, you must change `Java_com_your_package_name_YuvConverter` to match your app's package name. For example, if your package is `com.example.myapp` and your Kotlin file is `YuvConverter.kt`, the line should be `Java_com_example_myapp_YuvConverter_yuv420ToNv21Native`.
+
+### Step 3: Create the Kotlin Interface
+
+This Kotlin object will load your native library and provide a clean function to call from your app code.
+
+1.  **Create Kotlin File:** In your main source directory (`app/src/main/java/com/your/package/name/`), create a new Kotlin file named `YuvConverter.kt`.
+
+2.  **Add the Interface Code:**
+
+    ```kotlin
+    package com.your.package.name // <-- Change to your actual package name
+
+    import android.media.Image
+    import java.nio.ByteBuffer
+
+    object YuvConverter {
+
+        init {
+            // This loads the native library we built, named "libyuv_converter.so"
+            System.loadLibrary("yuv_converter")
+        }
+
+        /**
+         * A high-performance helper function to convert a YUV_420_888 Image to an NV21 byte array
+         * using a native C++ implementation.
+         *
+         * @param image The Image object from the Camera2 API.
+         * @return The NV21 byte array.
+         */
+        fun yuv420ToNv21(image: Image): ByteArray {
+            // Ensure the image is in the correct format
+            if (image.format != android.graphics.ImageFormat.YUV_420_888) {
+                throw IllegalArgumentException("Image must be in YUV_420_888 format")
+            }
+
+            val yPlane = image.planes[0]
+            val uPlane = image.planes[1]
+            val vPlane = image.planes[2]
+
+            val yBuffer: ByteBuffer = yPlane.buffer
+            val uBuffer: ByteBuffer = uPlane.buffer
+            val vBuffer: ByteBuffer = vPlane.buffer
+
+            // Call the external C++ function
+            return yuv420ToNv21Native(
+                yBuffer,
+                uBuffer,
+                vBuffer,
+                yPlane.rowStride,
+                uPlane.rowStride,
+                vPlane.rowStride,
+                uPlane.pixelStride, // U and V planes have the same pixel stride
+                vPlane.pixelStride,
+                image.width,
+                image.height
+            )
+        }
+
+        // This declares the native function that is implemented in yuv_converter.cpp
+        private external fun yuv420ToNv21Native(
+            yBuffer: ByteBuffer,
+            uBuffer: ByteBuffer,
+            vBuffer: ByteBuffer,
+            yRowStride: Int,
+            uRowStride: Int,
+            vRowStride: Int,
+            uPixelStride: Int,
+            vPixelStride: Int,
+            width: Int,
+            height: Int
+        ): ByteArray
+    }
+    ```
+
+### Step 4: Rebuild and Use
+
+1.  **Sync Gradle and Rebuild:** Click **File > Sync Project with Gradle Files**, and then **Build > Rebuild Project**. This will compile your C++ code into a `.so` library and package it with your app.
+2.  **Use in your listener:** Now you can call it from your `ImageReader.OnImageAvailableListener` to get the fastest possible conversion without any external libraries.
+
+    ```kotlin
+    class MyImageAvailableListener : ImageReader.OnImageAvailableListener {
+        override fun onImageAvailable(reader: ImageReader) {
+            var image: Image? = null
+            try {
+                image = reader.acquireLatestImage()
+                if (image != null) {
+                    // Call the native converter
+                    val nv21ByteArray: ByteArray = YuvConverter.yuv420ToNv21(image)
+
+                    // Process the nv21ByteArray at maximum speed...
+                }
+            } finally {
+                image?.close()
+            }
+        }
+    }
+    ```
