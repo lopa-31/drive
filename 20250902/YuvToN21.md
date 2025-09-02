@@ -629,3 +629,191 @@ This Kotlin object will load your native library and provide a clean function to
         }
     }
     ```
+
+
+---
+---
+---
+# 4
+You are absolutely right to demand better performance. A 60ms conversion time is far too slow for real-time video processing and indicates that the previous C++ code was not sufficiently optimized. The bottleneck is the row-by-row, pixel-by-pixel processing of the U and V planes, which doesn't take advantage of modern CPU capabilities.
+
+To get the performance leap you're looking for (down to ~30ms or even sub-10ms), we must use **NEON Intrinsics**.
+
+NEON is an advanced SIMD (Single Instruction, Multiple Data) instruction set available on ARM processors, which power virtually all Android devices. It allows the CPU to perform the same operation on multiple pieces of data simultaneously. Instead of interleaving one U and one V pixel at a time, we can load 8 or 16 pixels at once and interleave them with a single instruction. This is the exact technique that high-performance libraries like Google's `libyuv` use to achieve their speed.
+
+Here is the fully optimized, self-contained C++ code using NEON, along with the necessary build configuration changes.
+
+### Step 1: Update Your `CMakeLists.txt` to Enable NEON
+
+You must enable NEON flags for the compiler. This tells it to generate the specialized NEON instructions. Modify your `app/src/main/cpp/CMakeLists.txt` file to include the `-mfpu=neon` flag.
+
+```cmake
+# Sets the minimum version of CMake required.
+cmake_minimum_required(VERSION 3.22.1)
+
+add_library(
+        yuv_converter
+        SHARED
+        yuv_converter.cpp)
+
+# Enable NEON instructions for ARM architectures
+if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "arm64-v8a")
+    # Set the compile flags for our library
+    target_compile_options(yuv_converter PRIVATE -mfpu=neon -O3 -D__ARM_NEON__)
+endif()
+
+find_library(
+        log-lib
+        log)
+
+target_link_libraries(
+        yuv_converter
+        ${log-lib})
+```
+**Note:** We also add `-O3` for maximum optimization.
+
+### Step 2: Update Your `build.gradle` to Target ARM Architectures
+
+To ensure your app builds the native code for the right CPUs, specify the ABI filters in your module-level `build.gradle` or `build.gradle.kts`.
+
+**Groovy (`build.gradle`):**
+```groovy
+android {
+    // ...
+    defaultConfig {
+        // ...
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+    // ...
+}
+```
+**Kotlin DSL (`build.gradle.kts`):**
+```kotlin
+android {
+    // ...
+    defaultConfig {
+        // ...
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+    // ...
+}
+```
+
+### Step 3: Use the NEON-Optimized C++ Code
+
+Replace the entire content of your `app/src/main/cpp/yuv_converter.cpp` file with the code below. It includes a highly optimized NEON path for interleaving the U and V planes.
+
+```cpp
+#include <jni.h>
+#include <cstring> // For memcpy
+
+// Include NEON header only when compiling for ARM
+#if defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_your_package_name_YuvConverter_yuv420ToNv21Native( // <-- IMPORTANT: Change this
+        JNIEnv *env,
+        jobject /* this */,
+        jobject y_buffer,
+        jobject u_buffer,
+        jobject v_buffer,
+        jint y_row_stride,
+        jint u_row_stride,
+        jint v_row_stride,
+        jint u_pixel_stride,
+        jint v_pixel_stride,
+        jint width,
+        jint height) {
+
+    // Get direct pointers to the pixel data
+    auto y_src = static_cast<const uint8_t *>(env->GetDirectBufferAddress(y_buffer));
+    auto u_src = static_cast<const uint8_t *>(env->GetDirectBufferAddress(u_buffer));
+    auto v_src = static_cast<const uint8_t *>(env->GetDirectBufferAddress(v_buffer));
+
+    // Create the output Java byte array
+    jbyteArray nv21_output_array = env->NewByteArray(width * height * 3 / 2);
+    auto nv21_output_ptr = env->GetByteArrayElements(nv21_output_array, nullptr);
+    auto nv21_dst = reinterpret_cast<uint8_t *>(nv21_output_ptr);
+
+    // 1. Copy Y Plane (fast path for continuous memory)
+    uint8_t *y_dst = nv21_dst;
+    if (y_row_stride == width) {
+        memcpy(y_dst, y_src, width * height);
+    } else {
+        for (int i = 0; i < height; ++i) {
+            memcpy(y_dst + i * width, y_src + i * y_row_stride, width);
+        }
+    }
+
+    // 2. Interleave U and V Planes (NV21 format is VUVUVU...)
+    uint8_t *vu_dst = nv21_dst + width * height;
+    int uv_width = width / 2;
+    int uv_height = height / 2;
+
+    for (int row = 0; row < uv_height; ++row) {
+        // Get pointers to the start of the current row for U and V
+        const uint8_t *v_row_ptr = v_src + (row * v_row_stride);
+        const uint8_t *u_row_ptr = u_src + (row * u_row_stride);
+        // Get pointer to the start of the current row in the destination
+        uint8_t *vu_row_dst_ptr = vu_dst + (row * width);
+
+        int col = 0;
+
+#if defined(__ARM_NEON__)
+        // NEON-optimized path for interleaving 16 pixels (8 U and 8 V) at a time
+        for (; col <= uv_width - 8; col += 8) {
+            // If pixel stride is 1 (UUUUUUUU), we can do a direct load.
+            if (u_pixel_stride == 1 && v_pixel_stride == 1) {
+                // Load 8 U values and 8 V values into NEON registers
+                uint8x8_t u_vec = vld1_u8(u_row_ptr + col);
+                uint8x8_t v_vec = vld1_u8(v_row_ptr + col);
+
+                // Create a 2-element structure of vectors to store V and U
+                uint8x8x2_t vu_vec;
+                vu_vec.val[0] = v_vec; // V plane first
+                vu_vec.val[1] = u_vec; // U plane second
+
+                // Store the interleaved VU data (VUVUVU...) to the destination
+                vst2_u8(vu_row_dst_ptr + (col * 2), vu_vec);
+            } else {
+                // Slower NEON path for pixel strides > 1 (e.g., U.U.U.U...)
+                // We de-interleave the source into temporary registers first.
+                uint8x8x2_t u_deinterleaved = vld2_u8(u_row_ptr + col * u_pixel_stride);
+                uint8x8x2_t v_deinterleaved = vld2_u8(v_row_ptr + col * v_pixel_stride);
+                
+                uint8x8x2_t vu_to_store;
+                vu_to_store.val[0] = v_deinterleaved.val[0]; // V
+                vu_to_store.val[1] = u_deinterleaved.val[0]; // U
+
+                vst2_u8(vu_row_dst_ptr + (col * 2), vu_to_store);
+            }
+        }
+#endif
+        // Scalar fallback loop for remaining pixels or non-NEON builds
+        for (; col < uv_width; ++col) {
+            vu_row_dst_ptr[col * 2] = *(v_row_ptr + col * v_pixel_stride);
+            vu_row_dst_ptr[col * 2 + 1] = *(u_row_ptr + col * u_pixel_stride);
+        }
+    }
+
+    env->ReleaseByteArrayElements(nv21_output_array, nv21_output_ptr, 0);
+    return nv21_output_array;
+}
+```
+**Reminder:** Again, make sure to replace `Java_com_your_package_name_YuvConverter` with the correct path matching your project's package name and Kotlin class.
+
+### Step 4: Rebuild Your Project
+
+After saving the changes to `CMakeLists.txt` and `yuv_converter.cpp`:
+1.  Click **File > Sync Project with Gradle Files**.
+2.  Click **Build > Rebuild Project**.
+
+Your Kotlin code (`YuvConverter.kt` and your `OnImageAvailableListener`) does not need any changes. The interface remains exactly the same.
+
+With these changes, the native code will now be compiled with full optimization and will use powerful NEON instructions for the most computationally expensive part of the conversion. This should drastically reduce your conversion time, bringing it well within your 30ms target for typical camera resolutions.
