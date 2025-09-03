@@ -184,11 +184,10 @@ minSafeDistanceCm = max(minSafeDistanceCm, minFocusDistanceCm.toDouble())
     *   It also checks the camera's `CONTROL_AF_STATE`.
     *   If both conditions (distance is safe AND focus is locked) are met, you enable the capture button. Otherwise, you provide helpful UI feedback to the user.
 
-
 ---
 
+# 2
 
-#2
 You are absolutely right. This is a crucial and often overlooked detail when working with the Camera2 API. The raw image data from the sensor is almost always in a landscape orientation, regardless of how you hold your phone. The `TextureView` handles the rotation for display, but our processing pipeline does not, leading to incorrect results.
 
 Let's fix this by making our system rotation-aware. The goal is to ensure the image being processed by OpenCV is always in the "upright" orientation that the user sees.
