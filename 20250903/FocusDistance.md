@@ -385,3 +385,127 @@ def process_image_physical(nv21_bytes, raw_image_width, raw_image_height, rotati
             # 5. Return results. The bounding box coordinates are now in the upright coordinate system.
             return {
                 "distance_cm": distance_mm / 10.0
+
+
+---
+
+# 3
+
+You are absolutely right. My apologies for the oversight in the previous response. The `calculateOptimalFocusDistance` function is just as critical to make rotation-aware, as it defines the "target" for your entire system. If the target is calculated incorrectly, the real-time checks will be meaningless.
+
+Let's correct this with a clear, robust method that correctly maps the on-screen overlay to the sensor's physical space, regardless of orientation.
+
+### The Core Problem and Solution
+
+The `overlayView`'s width is relative to the `previewView`'s dimensions as seen on the screen. We need to determine what physical area on the camera sensor corresponds to the `previewView`, and then calculate what fraction of that area is taken up by the `overlayView`.
+
+*   **In Portrait Mode:** The `previewView`'s width (the short edge of the screen) corresponds to the **camera sensor's height** (the short edge of the sensor).
+*   **In Landscape Mode:** The `previewView`'s width (the long edge of the screen) corresponds to the **camera sensor's width** (the long edge of the sensor).
+
+We will write the `calculateOptimalFocusDistance` function to explicitly handle these two cases.
+
+---
+
+### Updated Android Code: `calculateOptimalFocusDistance`
+
+Here is the fully revised, rotation-aware function. It correctly determines which sensor axis to use based on the device's current orientation.
+
+```kotlin
+// Make sure you have these member variables populated from setupCameraParameters
+private var cameraImageWidth: Int = 0     // e.g., 4000 (from sensor)
+private var cameraImageHeight: Int = 0    // e.g., 3000 (from sensor)
+private var sensorWidth: Float = 0f       // e.g., 6.16mm
+private var sensorHeight: Float = 0f      // e.g., 4.62mm
+private var lensFocalLength: Float = 0f   // e.g., 4.74mm
+
+// Your UI views
+private lateinit var previewView: TextureView
+private lateinit var overlayView: View
+
+// And the constant for the finger
+private const val AVG_FINGER_WIDTH_MM = 16.0
+
+// The results of our calculation
+private var minSafeDistanceCm: Double = 0.0
+private var maxSafeDistanceCm: Double = 0.0
+
+/**
+ * Calculates the optimal focus distance and safe range dynamically,
+ * correctly handling device orientation.
+ *
+ * This should be called once the UI is laid out and camera parameters are known.
+ */
+private fun calculateOptimalFocusDistance() {
+    // Guard clause to ensure all necessary dimensions are available
+    if (cameraImageWidth == 0 || previewView.width == 0 || overlayView.width == 0 || sensorWidth == 0f) {
+        Log.e("FocusCalc", "Cannot calculate distance, critical dimensions are not ready.")
+        return
+    }
+
+    // Get the device's current display rotation
+    val displayRotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+        display?.rotation ?: Surface.ROTATION_0
+    } else {
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.rotation
+    }
+
+    // This ratio is the key: What fraction of the preview's width does the overlay occupy?
+    val overlayToPreviewRatio = overlayView.width.toDouble() / previewView.width.toDouble()
+
+    val targetPixelWidthOnSensor: Double
+    val effectiveImageDimensionForCalc: Int
+    val effectiveSensorDimensionForCalc: Float
+
+    // Determine which sensor axis corresponds to the preview's width based on rotation
+    if (displayRotation == Surface.ROTATION_0 || displayRotation == Surface.ROTATION_180) {
+        // --- DEVICE IS IN PORTRAIT ORIENTATION ---
+        // The preview's width corresponds to the sensor's SHORTER side (its height).
+        effectiveImageDimensionForCalc = cameraImageHeight // Use the pixel height of the sensor image
+        effectiveSensorDimensionForCalc = sensorHeight      // Use the physical height of the sensor
+
+        // The target width on the sensor is a fraction of the sensor's height in pixels
+        targetPixelWidthOnSensor = overlayToPreviewRatio * cameraImageHeight
+
+    } else {
+        // --- DEVICE IS IN LANDSCAPE ORIENTATION ---
+        // The preview's width corresponds to the sensor's LONGER side (its width).
+        effectiveImageDimensionForCalc = cameraImageWidth // Use the pixel width of the sensor image
+        effectiveSensorDimensionForCalc = sensorWidth     // Use the physical width of the sensor
+
+        // The target width on the sensor is a fraction of the sensor's width in pixels
+        targetPixelWidthOnSensor = overlayToPreviewRatio * cameraImageWidth
+    }
+
+    // Now, apply the universal distance formula with the correctly chosen dimensions
+    val optimalDistanceMm = (lensFocalLength * AVG_FINGER_WIDTH_MM * effectiveImageDimensionForCalc) /
+                              (targetPixelWidthOnSensor * effectiveSensorDimensionForCalc)
+
+    // Create a "safe range" around this optimal distance (e.g., +/- 25%)
+    val tolerance = 0.25
+    var minDistance = optimalDistanceMm * (1.0 - tolerance)
+    val maxDistance = optimalDistanceMm * (1.0 + tolerance)
+
+    // Also, ensure our minimum is not less than the hardware's minimum focus distance
+    if (minFocusDistanceCm > 0) {
+        minDistance = max(minDistance, (minFocusDistanceCm * 10).toDouble()) // Convert cm to mm
+    }
+
+    minSafeDistanceCm = minDistance / 10.0
+    maxSafeDistanceCm = maxDistance / 10.0
+
+    Log.d("FocusCalc", "---------------------------------")
+    Log.d("FocusCalc", "Orientation: ${if (displayRotation == 0 || displayRotation == 180) "Portrait" else "Landscape"}")
+    Log.d("FocusCalc", "Optimal Distance: ${"%.2f".format(optimalDistanceMm / 10.0)} cm")
+    Log.d("FocusCalc", "Safe Range: ${"%.2f".format(minSafeDistanceCm)} cm to ${"%.2f".format(maxSafeDistanceCm)} cm")
+    Log.d("FocusCalc", "---------------------------------")
+}
+```
+
+### How to Integrate and Use
+
+1.  **Populate All Variables:** Ensure `cameraImageWidth`, `cameraImageHeight`, `sensorWidth`, `sensorHeight`, `lensFocalLength`, and `minFocusDistanceCm` are correctly retrieved from `CameraCharacteristics` during your camera setup.
+2.  **Call at the Right Time:** Call `calculateOptimalFocusDistance()` after your `previewView` and `overlayView` have been laid out on the screen. Using `previewView.post { ... }` is the most reliable way to do this.
+3.  **No Other Changes Needed:** Your real-time processing loop (`onImageAvailableListener` and the Python script) is already correct from the previous step. It will now be checking against a properly calculated safe zone.
+
+This revised logic correctly models the geometry from the screen overlay, through the rotated preview, and back to the physical camera sensor, giving you a robust and dynamic target distance that works correctly on any device in any orientation.
