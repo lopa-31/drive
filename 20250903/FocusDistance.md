@@ -183,3 +183,206 @@ minSafeDistanceCm = max(minSafeDistanceCm, minFocusDistanceCm.toDouble())
     *   It compares the `distanceCm` against the pre-calculated `minSafeDistanceCm` and `maxSafeDistanceCm`.
     *   It also checks the camera's `CONTROL_AF_STATE`.
     *   If both conditions (distance is safe AND focus is locked) are met, you enable the capture button. Otherwise, you provide helpful UI feedback to the user.
+
+
+---
+
+
+#2
+You are absolutely right. This is a crucial and often overlooked detail when working with the Camera2 API. The raw image data from the sensor is almost always in a landscape orientation, regardless of how you hold your phone. The `TextureView` handles the rotation for display, but our processing pipeline does not, leading to incorrect results.
+
+Let's fix this by making our system rotation-aware. The goal is to ensure the image being processed by OpenCV is always in the "upright" orientation that the user sees.
+
+### The Solution: Rotate in Python
+
+The cleanest solution is to determine the necessary rotation on the Android side and pass a simple instruction to the Python script, which will perform the rotation using `cv2.rotate()` before any other processing.
+
+Here is the updated plan:
+
+1.  **Android:**
+    *   Determine the sensor's orientation (a fixed value, e.g., 90 degrees).
+    *   Determine the device's current display rotation (0, 90, 180, 270 degrees).
+    *   Calculate the total rotation needed to make the sensor image upright.
+    *   Pass the raw landscape image bytes **and a rotation code** to Python.
+    *   Pass the **correct sensor dimension** (width or height) that corresponds to the final upright image's width.
+2.  **Python:**
+    *   Receive the image bytes and the rotation code.
+    *   Apply the rotation using `cv2.rotate()`.
+    *   Proceed with the rest of the logic on the now-upright image. The rest of the code remains the same because it's seeing the image correctly.
+
+---
+
+### Step 1: Android - Calculate Rotation and Update Parameters
+
+We need a function to calculate the required rotation. This involves comparing the camera sensor's orientation to the phone's current display rotation.
+
+#### 1. Add Helper Function to Get Rotation
+
+In your `CameraActivity.kt`, add this logic.
+
+```kotlin
+import android.view.Surface
+import com.chaquo.python.PyObject // Make sure this is imported
+
+// Member variable for sensor orientation
+private var sensorOrientation = 0
+
+// In your setupCameraParameters function, store the sensor orientation
+private fun setupCameraParameters(manager: CameraManager, cameraId: String) {
+    val characteristics = manager.getCameraCharacteristics(cameraId)
+    sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)!!
+    // ... rest of your setup logic
+}
+
+/**
+ * Calculates the rotation needed for the Python script and returns a code
+ * that maps to cv2.ROTATE_* constants.
+ */
+private fun getCvRotationCode(): Int {
+    // Get current device display rotation
+    val displayRotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+        display?.rotation ?: Surface.ROTATION_0
+    } else {
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.rotation
+    }
+
+    val degrees = when (displayRotation) {
+        Surface.ROTATION_0 -> 0
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+
+    // This formula computes the total rotation needed to align the camera
+    // sensor image with the current display orientation.
+    val totalRotation = (sensorOrientation - degrees + 360) % 360
+
+    // Map degrees to cv2.ROTATE_* constants
+    // 0 -> cv2.ROTATE_90_CLOCKWISE
+    // 1 -> cv2.ROTATE_180
+    // 2 -> cv2.ROTATE_90_COUNTERCLOCKWISE
+    return when (totalRotation) {
+        90 -> 0 
+        180 -> 1
+        270 -> 2
+        else -> -1 // -1 means no rotation is needed
+    }
+}
+```
+
+#### 2. Update the `onImageAvailableListener` Call
+
+Now, we adjust the parameters we send to Python based on the rotation.
+
+```kotlin
+// You'll need both sensor width and height now
+private var sensorWidth = 0.0f
+private var sensorHeight = 0.0f
+// In setupCameraParameters, get both:
+// val sensorSize: SizeF? = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+// sensorWidth = sensorSize.width
+// sensorHeight = sensorSize.height
+
+
+private val onImageAvailableListener = ImageReader.OnImageAvailableListener { reader ->
+    // ... (get image and throttle logic) ...
+    val image = reader.acquireLatestImage() ?: return@OnImageAvailableListener
+
+    // These are the raw, un-rotated dimensions from the sensor
+    val rawImageWidth = image.width
+    val rawImageHeight = image.height
+    val nv21Bytes = yuv420_888toNv21(image)
+    image.close()
+
+    val rotationCode = getCvRotationCode()
+
+    var uprightImageWidth = rawImageWidth
+    var uprightImageHeight = rawImageHeight
+    var effectiveSensorWidth = sensorWidth
+
+    // If we are rotating to portrait, the dimensions and sensor axis swap
+    if (rotationCode == 0 || rotationCode == 2) { // 90 or 270 degrees
+        uprightImageWidth = rawImageHeight
+        uprightImageHeight = rawImageWidth
+        effectiveSensorWidth = sensorHeight // CRITICAL: Use sensor's shorter side
+    }
+
+    // --- Call Python with updated parameters ---
+    val py = Python.getInstance()
+    val pyModule = py.getModule("main")
+
+    val resultObj: PyObject? = pyModule.callAttr(
+        "process_image_physical",
+        nv21Bytes,
+        rawImageWidth,       // Pass raw dimensions for decoding
+        rawImageHeight,      // Pass raw dimensions for decoding
+        rotationCode,        // The new rotation code
+        KNOWN_OBJECT_WIDTH_MM,
+        lensFocalLength,
+        effectiveSensorWidth // Pass the correct sensor dimension
+    )
+    
+    // The rest of the result handling logic remains the same!
+    // ...
+}
+```
+
+---
+
+### Step 2: Python - Update Script to Handle Rotation
+
+The Python script change is minimal and clean. We just add the rotation step at the beginning.
+
+```python
+import cv2
+import numpy as np
+
+# ... find_marker and calculate_distance_physical functions remain unchanged ...
+
+def rotate_image(image, rotation_code):
+    """Rotates an image based on a code mapped from Android."""
+    if rotation_code == 0:  # ROTATE_90_CLOCKWISE
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    elif rotation_code == 1:  # ROTATE_180
+        return cv2.rotate(image, cv2.ROTATE_180)
+    elif rotation_code == 2:  # ROTATE_90_COUNTERCLOCKWISE
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    else:  # No rotation needed
+        return image
+
+def process_image_physical(nv21_bytes, raw_image_width, raw_image_height, rotation_code,
+                           known_object_width_mm, focal_length_mm, sensor_width_mm):
+    """
+    Main function updated to handle rotation.
+    """
+    try:
+        # 1. Decode the raw landscape image
+        yuv_image = np.frombuffer(nv21_bytes, dtype=np.uint8).reshape((int(raw_image_height * 1.5), raw_image_width))
+        bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
+
+        # 2. Rotate the image to be upright
+        upright_image = rotate_image(bgr_image, rotation_code)
+        
+        # Get the dimensions of the final, upright image
+        upright_image_height_pixels, upright_image_width_pixels, _ = upright_image.shape
+
+        # 3. Find the marker in the UPRIGHT image
+        marker_box = find_marker(upright_image)
+
+        if marker_box is not None:
+            x, y, w, h = marker_box
+            
+            # 4. Calculate distance. Note that we now use the width of the upright image.
+            distance_mm = calculate_distance_physical(
+                focal_length_mm=focal_length_mm,
+                real_object_width_mm=known_object_width_mm,
+                object_width_pixels=w,
+                sensor_width_mm=sensor_width_mm, # This is the already-corrected effective sensor width
+                image_width_pixels=upright_image_width_pixels # The width of the image we processed
+            )
+            
+            # 5. Return results. The bounding box coordinates are now in the upright coordinate system.
+            return {
+                "distance_cm": distance_mm / 10.0
