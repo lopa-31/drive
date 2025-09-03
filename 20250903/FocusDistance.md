@@ -385,7 +385,7 @@ def process_image_physical(nv21_bytes, raw_image_width, raw_image_height, rotati
             # 5. Return results. The bounding box coordinates are now in the upright coordinate system.
             return {
                 "distance_cm": distance_mm / 10.0
-
+```
 
 ---
 
