@@ -518,3 +518,72 @@ Now, run the exact same command from your project's root directory:
 ```
 
 This time, Gradle will correctly configure and execute the task. You will find your final, combined `sdk-fat.aar` file inside the `:core/build/outputs/aar/` directory. This manual task is a very reliable fallback when plugins have compatibility issues.
+
+
+# 5
+
+You are absolutely right to point that out. My apologies, you have encountered another classic Gradle DSL detail. The error `could not set unknown property 'archiveFileName'` is 100% correct because a generic `Copy` task doesn't create an archive file; it just copies files to a directory.
+
+To fix this, we need to change the task's type from `Copy` to `Zip`. A `Zip` task is designed specifically to create an archive, and therefore it *does* have the `archiveFileName` property.
+
+Since an `.aar` file is fundamentally a `.zip` file with a specific internal structure, using the `Zip` task is the correct approach.
+
+### The Correct and Final Groovy Task
+
+Please **replace the previous `createFatAar` task** in your `:core/build.gradle` file with this corrected version.
+
+```groovy
+// In :core/build.gradle (replace the old createFatAar task with this one)
+
+task createFatAar(type: Zip) { // <--- The fix is changing 'Copy' to 'Zip'
+    group = 'build'
+    description = 'Creates a single AAR with all module dependencies by merging them into a zip archive.'
+
+    // Set the name for the final output file.
+    // This property exists on Zip tasks, but not on Copy tasks.
+    archiveFileName = "sdk-all-in-one.aar"
+    destinationDirectory = file("$buildDir/outputs/aar")
+
+    // This part iterates through your dependencies to find other AARs to merge.
+    doFirst {
+        // First, add the contents of this module's own AAR
+        from(zipTree(tasks.bundleReleaseAar.archiveFile))
+
+        // Then, add the contents of all dependency AARs
+        configurations.releaseRuntimeClasspath.files.each { file ->
+            if (file.name.endsWith('.aar')) {
+                from(zipTree(file))
+            }
+        }
+    }
+
+    // Exclude files that would cause conflicts when merging archives
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude("META-INF/DEPENDENCIES", "META-INF/LICENSE*")
+    exclude("META-INF/NOTICE*", "**/R.txt", "**/R.jar", "**/annotations.zip", "**/lint.jar")
+}
+
+// Optional but recommended: Make it depend on the task that builds the core AAR
+tasks.named("createFatAar").configure {
+    dependsOn tasks.named("bundleReleaseAar")
+}
+```
+
+### Summary of Changes and Why They Work
+
+1.  **`type: Zip`**: We changed the task type to `Zip`. This is the main fix. The `Zip` task understands how to create an archive file and has properties like `archiveFileName`.
+2.  **`destinationDirectory`**: The `Zip` task uses `destinationDirectory` instead of `destinationDir`. A minor but important API difference.
+3.  **Moved `from` clauses into `doFirst`**: This ensures that we only try to access the AAR files *after* Gradle has confirmed they have been built. It's a more robust way to configure the task.
+4.  **`duplicatesStrategy = DuplicatesStrategy.EXCLUDE`**: This is a safe way to handle cases where multiple AARs contain the same file (like a common license file). Instead of failing the build, it will simply exclude the duplicates.
+
+### What to Do Now
+
+1.  Replace the old task in `:core/build.gradle` with the new one above.
+2.  Sync Gradle.
+3.  Run the command from your project root:
+
+    ```bash
+    ./gradlew :core:createFatAar
+    ```
+
+This should now execute successfully and produce the file `sdk-all-in-one.aar` in your `:core/build/outputs/aar/` directory. Thank you for your patience as we work through these Gradle specifics
