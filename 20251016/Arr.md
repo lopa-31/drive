@@ -1,169 +1,170 @@
-Guide: Creating a Single Android SDK (Fat AAR) from Multiple Modules
-This guide will walk you through the process of bundling multiple Android library modules into a single .aar file. This approach simplifies distribution and hides your project's internal module structure from the end-user.
-The end goal is to have a single module (which we'll call :sdk) that aggregates all your other library modules (:core, :capture, :network, etc.) into one artifact.
-Step 1: Create a New "Aggregator" Module
-First, we need a dedicated Android Library module that will serve as the container for your final SDK.
- * In Android Studio, go to File > New > New Module....
- * Select Android Library.
- * Name the module sdk and configure it with your desired package name (e.g., com.yourcompany.sdk).
- * Click Finish.
-This :sdk module will not contain any code. Its sole purpose is to define dependencies and run the custom task that builds the final package.
-Step 2: Configure Dependencies for the :sdk Module
-Now, you need to tell the :sdk module about all the other library modules it needs to bundle.
-In the build.gradle.kts (or build.gradle) file of your new :sdk module, add dependencies for all the libraries you want to include.
-File: sdk/build.gradle.kts
-plugins {
-    id("com.android.library")
-    id("org.jetbrains.kotlin.android")
-}
+## Building a Unified Android SDK: A Step-by-Step Guide to Merging Modules and Hiding Internal Code
 
-android {
-    namespace = "com.yourcompany.sdk"
-    compileSdk = 34 // Use your project's compileSdk
+For Android developers managing multi-module projects, the need to create a single, streamlined SDK is a common challenge. This guide provides a comprehensive, step-by-step approach to building a single Android Archive (AAR) from multiple library modules, while ensuring that only the designated public API of your core library is exposed to the end-user. This method effectively hides the implementation details of your internal libraries, offering a clean and secure SDK distribution.
 
-    defaultConfig {
-        minSdk = 24 // Use your project's minSdk
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
+This process will utilize a "fat AAR" approach, which involves bundling multiple modules into a single AAR file. We will also leverage ProGuard for code obfuscation and Kotlin's visibility modifiers to control API exposure.
 
-    buildTypes {
-        release {
-            isMinifyEnabled = true // Enable obfuscation and shrinking
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-            // This is crucial for defining the public API
-            consumerProguardFile("consumer-rules.pro")
-        }
-    }
-    // Other configurations like compileOptions, kotlinOptions...
-}
+### Project Structure Overview
 
+For this guide, we will assume the following module structure:
+
+*   `:app`: The main application module used for testing the SDK.
+*   `:core`: The public-facing library module that serves as the entry point to the SDK.
+*   `:capture`, `:network`, `:security`, `:embedding`, `:utility`: Internal library modules that are dependencies of the `:core` module.
+
+The goal is to create a single AAR file that includes all the functionality from `:core` and its internal dependencies, while only making the public functions and classes of `:core` accessible.
+
+### Step 1: Configuring Your `build.gradle` Files
+
+The first step is to correctly configure the Gradle dependencies in your project. The `:core` module needs to declare its dependencies on the internal library modules.
+
+**In your `:core` module's `build.gradle.kts` (or `build.gradle`) file, add the following dependencies:**
+
+```kotlin
 dependencies {
-    // Add all your library modules here.
-    // The 'api' configuration ensures that the public methods of :core are exposed.
-    api(project(":core"))
+    // Other dependencies
 
-    // The rest can be 'implementation' as they are internal.
+    // Declare dependencies on internal library modules
     implementation(project(":capture"))
     implementation(project(":network"))
     implementation(project(":security"))
     implementation(project(":embedding"))
     implementation(project(":utility"))
 }
+```
 
-Step 3: Define the Public API and Hide Internals
-This is a critical step to ensure users can only access the classes from :core that you intend to expose. We will use ProGuard/R8 rules to achieve this.
- * In your :sdk module, create a file named consumer-rules.pro.
- * Add rules to this file to -keep only the public classes and methods from your :core module. Everything else will be obfuscated and can be removed by the consumer's app if unused (code shrinking).
-File: sdk/consumer-rules.pro
-# This file defines the public API of your SDK.
-# Only the classes, methods, and fields that match these rules will be
-# guaranteed to be kept and not renamed.
+This ensures that the code and resources from the internal modules are included when the `:core` module is built.
 
-# Example: Keep all public classes and their public members in the 'api' package of your :core module.
-# Adjust the package name to match your actual public API structure.
--keep public class com.yourcompany.core.api.** {
-    public *;
-}
+### Step 2: Implementing a "Fat AAR" Solution
 
-# If you have public data classes or models, you might need to keep them as well.
-# Example:
-# -keep public class com.yourcompany.core.models.** { *; }
+To combine all your library modules into a single AAR, you will need to use a Gradle plugin designed for this purpose. A popular and effective option is the "fat-aar-android" plugin.
 
-# IMPORTANT: Everything else from :core, :capture, :network, etc., will be
-# obfuscated and potentially removed if not reachable from the code you "keep" above.
-# This is how you hide the internal implementation.
+**1. Add the plugin to your project's root `build.gradle.kts` (or `build.gradle`) file:**
 
-Step 4: Create the Gradle Task to Build the Fat AAR
-By default, Gradle does not bundle transitive dependencies into an .aar. We need to create a custom task to manually unpack all the individual .aar files and merge them into a single one.
- * In your :sdk module's directory, create a new file named fat-aar.gradle.
- * Copy the following Gradle task script into this file. This script defines a task called assembleFatAar.
-File: sdk/fat-aar.gradle
-// This task merges all library dependencies into a single AAR.
-
-// Define the libraries to be merged.
-// The task will automatically find these dependencies from the 'release' build type.
-def modulesToMerge = [':core', ':capture', ':network', ':security', ':embedding', ':utility']
-
-task assembleFatAar(type: Copy) {
-    group = "build"
-    description = "Assembles a single AAR file from all library modules."
-
-    // The final AAR will have the name of this :sdk module.
-    def aarName = "${project.name}-release.aar"
-    from(zipTree(file("build/outputs/aar/${aarName}")))
-
-    doLast {
-        // Temporary directory for merging.
-        def mergeDir = file("${buildDir}/intermediates/fat-aar-merge/")
-        if (mergeDir.exists()) {
-            mergeDir.deleteDir()
-        }
-        mergeDir.mkdirs()
-
-        // 1. Unzip the main AAR from the :sdk module.
-        copy {
-            from(zipTree(file("build/outputs/aar/${aarName}")))
-            into mergeDir
-        }
-
-        // 2. Iterate over modules, unzip their AARs, and merge contents.
-        modulesToMerge.forEach { moduleName ->
-            def moduleProject = project(moduleName)
-            def moduleAarFile = file("${moduleProject.buildDir}/outputs/aar/${moduleProject.name}-release.aar")
-
-            if (moduleAarFile.exists()) {
-                copy {
-                    from(zipTree(moduleAarFile))
-                    into mergeDir
-                    // Exclude files that can cause conflicts or are unnecessary.
-                    exclude("**/R.txt", "**/AndroidManifest.xml", "**/proguard.txt")
-                }
-
-                // Merge JAR files into the 'libs' folder.
-                copy {
-                    from(zipTree(moduleAarFile).matching { include 'classes.jar' })
-                    into "${mergeDir}/libs"
-                    rename 'classes.jar', "${moduleProject.name}-classes.jar"
-                }
-            }
-        }
-
-        // 3. Delete the old classes.jar from the root, as they are now in /libs
-        delete "${mergeDir}/classes.jar"
-
-        // 4. Create the new Fat AAR file.
-        def destFile = file("${buildDir}/outputs/aar/fat-sdk-release.aar")
-        if (destFile.exists()) {
-            destFile.delete()
-        }
-
-        ant.zip(destfile: destFile, basedir: mergeDir)
-
-        // Clean up.
-        mergeDir.deleteDir()
+```kotlin
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.github.kezong:fat-aar:1.3.8")
     }
 }
+```
 
-// Make sure the fat AAR task runs after the regular assembleRelease task.
-assembleRelease.finalizedBy(assembleFatAar)
+**2. Apply the plugin in your `:core` module's `build.gradle.kts` (or `build.gradle`) file:**
 
- * Now, apply this script from your :sdk module's build.gradle.kts file by adding this line at the bottom:
-File: sdk/build.gradle.kts
-// ... (rest of the file)
+```kotlin
+plugins {
+    id("com.android.library")
+    kotlin("android")
+    id("com.kezong.fat-aar")
+}
+```
 
-// Apply the custom task script
-apply(from = "fat-aar.gradle")
+**3. Configure the dependencies to be embedded:**
 
-Step 5: Build and locate your SDK
-You are now ready to build the final artifact.
- * Open the Gradle terminal in Android Studio or your system's command line.
- * Run the assembleRelease task for the :sdk module.
-   ./gradlew :sdk:assembleRelease
+In your `:core` module's `build.gradle.kts` (or `build.gradle`), change the `implementation` dependency type to `embed` for the internal library modules. This tells the "fat-aar" plugin to include these modules in the final AAR.
 
- * The custom assembleFatAar task will run automatically after assembleRelease completes.
- * You can find your final, bundled SDK in the following directory:
-   sdk/build/outputs/aar/fat-sdk-release.aar
-This single .aar file is your distributable SDK. It contains the code and resources from all your library modules, with only the API you defined in consumer-rules.pro being public and unobfuscated.
+```kotlin
+dependencies {
+    // Other dependencies
+
+    embed(project(":capture"))
+    embed(project(":network"))
+    embed(project(":security"))
+    embed(project(":embedding"))
+    embed(project(":utility"))
+}
+```
+
+Now, when you build the `:core` module, Gradle will generate a single AAR file in the `build/outputs/aar/` directory that contains the compiled code and resources from `:core` and all its embedded dependencies.
+
+### Step 3: Hiding Internal Code with ProGuard and Visibility Modifiers
+
+The next crucial step is to hide the implementation details of the internal modules and only expose the public API of the `:core` module. This can be achieved through a combination of ProGuard for obfuscation and Kotlin's `internal` visibility modifier.
+
+#### Utilizing Kotlin's `internal` Visibility
+
+In your internal library modules (`:capture`, `:network`, `:security`, `:embedding`, `:utility`), declare all classes, functions, and properties that should not be part of the public SDK as `internal`. The `internal` modifier makes the declaration visible only within the same Gradle module.
+
+**Example in an internal module (e.g., `:network`):**
+
+```kotlin
+// This class will not be directly accessible to the end-user of the SDK
+internal class NetworkClient {
+    // ...
+}
+```
+
+In your `:core` module, you will still be able to access these `internal` members because they are in the same compilation unit. However, once the AAR is generated and consumed by a third-party app, these `internal` declarations will not be accessible.
+
+#### Configuring ProGuard for Obfuscation and API Exposure
+
+ProGuard is a powerful tool for shrinking, optimizing, and obfuscating your code. In this context, we'll use it to obfuscate the internal library code and ensure only the intended public API of the `:core` module remains accessible.
+
+**1. Enable ProGuard in your `:core` module's `build.gradle.kts` (or `build.gradle`) file:**
+
+```kotlin
+android {
+    // ...
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+}```
+
+**2. Create a `proguard-rules.pro` file in your `:core` module.**
+
+**3. Add ProGuard rules to `proguard-rules.pro` to:**
+
+*   **Keep the public API of your `:core` module:** You need to explicitly tell ProGuard not to obfuscate or remove the classes and methods that are part of your public SDK.
+
+    ```proguard
+    # Keep all public classes and their public members in the core module's public API package
+    -keep public class com.your.sdk.core.api.** {
+        public *;
+    }
+    ```
+
+*   **Allow obfuscation of all other code:** By not explicitly keeping the internal modules' code, ProGuard will obfuscate their class and method names, making them difficult to understand and use.
+
+    ```proguard
+    # Repackage all other classes into an internal package (optional but recommended)
+    -repackageclasses 'com.your.sdk.internal'
+    ```
+
+This configuration ensures that only the classes within the `com.your.sdk.core.api` package (or whichever package you define for your public API) are preserved with their original names, while all the internal implementation details from `:core` and the other modules are obfuscated.
+
+### Step 4: Building and Testing the SDK
+
+With the Gradle configurations and ProGuard rules in place, you can now build your SDK.
+
+1.  **Build the AAR:** Run the Gradle build task for your `:core` module. You can do this from the command line:
+
+    ```bash
+    ./gradlew :core:assembleRelease
+    ```
+
+    This will generate the fat AAR in the `:core/build/outputs/aar/` directory.
+
+2.  **Test the AAR:** To ensure your SDK works as expected and that the internal code is properly hidden, you can include it as a local dependency in a separate test application.
+
+    *   Copy the generated AAR file into the `libs` directory of your test application.
+    *   In the test app's `build.gradle.kts` (or `build.gradle`), add the following dependency:
+
+        ```kotlin
+        dependencies {
+            implementation(files("libs/core-release.aar"))
+        }
+        ```
+
+    *   Attempt to access the public API from your `:core` module. This should work as expected.
+    *   Attempt to access any of the classes or methods from your internal modules. You should find that they are either not visible or have been obfuscated, making them unusable.
+
+By following these steps, you can successfully build a single, unified Gradle SDK from a multi-module Android project. This approach not only simplifies the distribution of your library but also provides a strong layer of protection for your internal code, ensuring a clean and secure API for your end-users.
