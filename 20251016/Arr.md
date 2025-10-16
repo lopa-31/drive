@@ -166,11 +166,11 @@ With the Gradle configurations and ProGuard rules in place, you can now build yo
 
     *   Attempt to access the public API from your `:core` module. This should work as expected.
     *   Attempt to access any of the classes or methods from your internal modules. You should find that they are either not visible or have been obfuscated, making them unusable.
-
+ 
 By following these steps, you can successfully build a single, unified Gradle SDK from a multi-module Android project. This approach not only simplifies the distribution of your library but also provides a strong layer of protection for your internal code, ensuring a clean and secure API for your end-users.
 
 
-#2
+# 2
 
 Of course. The error message you're seeing is a classic sign of a plugin incompatibility, and it's a very common issue in the Android ecosystem.
 
