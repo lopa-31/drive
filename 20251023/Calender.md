@@ -937,3 +937,218 @@ val sampleEvents: EventMap by lazy {
     )
 }
 ```
+
+
+# 3
+
+Of course. You are right, the custom `Layout` composable is powerful but can be overly complex for this use case. We can achieve an almost identical result using more common and easier-to-understand composables like `Row` and `BoxWithConstraints`.
+
+This simplified implementation breaks the `WeekView` into day columns, making the logic much clearer.
+
+### The Simplified `WeekView` Implementation
+
+Here is the replacement code. You only need to replace the `WeekView` function and the related event positioning logic in the previous file. The rest of the code (`MainActivity`, `CalendarScreen`, `WeekCalendar`, `TimeGutter`, `EventItem`, etc.) remains exactly the same.
+
+The new approach works like this:
+1.  A `Row` lays out the seven days of the week.
+2.  Each day is a `BoxWithConstraints` that takes up equal width. This allows us to know the exact width for a single day.
+3.  Inside each day's box, we place the events, calculating their size and position based on the constraints.
+4.  The complex event overlap calculation is still necessary for a replica, but its application is now much more straightforward.
+
+Here are the functions to replace:
+
+```kotlin
+// --- REPLACE the old WeekView with this new simplified version ---
+
+@Composable
+fun WeekView(
+    weekDays: List<LocalDate>,
+    eventMap: EventMap,
+    modifier: Modifier = Modifier,
+    hourHeight: Dp = 60.dp
+) {
+    // We pre-calculate the event positions for the entire week.
+    val positionedEvents = remember(eventMap, weekDays) {
+        calculateEventPositions(eventMap.filterKeys { it in weekDays })
+    }
+    
+    val dividerColor = Color.LightGray
+
+    Row(modifier = modifier) {
+        // Create a column for each day of the week.
+        weekDays.forEach { day ->
+            val eventsForDay = positionedEvents.filter { it.date == day }
+            
+            // Each day is a BoxWithConstraints to get the width of the column.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    // Draw vertical divider for each day.
+                    .drawBehind {
+                        drawLine(
+                            color = dividerColor,
+                            start = Offset(size.width, 0f),
+                            end = Offset(size.width, size.height),
+                            strokeWidth = 1f
+                        )
+                    }
+            ) {
+                // This is the main canvas for the day where events are placed.
+                // It's tall enough to hold all 24 hours.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Draw horizontal hour lines.
+                        .drawBehind {
+                            (1..23).forEach { hour ->
+                                val y = hour * hourHeight.toPx()
+                                drawLine(
+                                    color = dividerColor,
+                                    start = Offset(0f, y),
+                                    end = Offset(size.width, y),
+                                    strokeWidth = 1f
+                                )
+                            }
+                        }
+                ) {
+                    // Place each event on the day's canvas.
+                    eventsForDay.forEach { positionedEvent ->
+                        val event = positionedEvent.event
+                        
+                        val topOffset = (event.startTime.toSecondOfDay() / 3600f) * hourHeight
+                        val eventDurationInMinutes = ChronoUnit.MINUTES.between(event.startTime, event.endTime)
+                        val eventHeight = (eventDurationInMinutes / 60f) * hourHeight
+                        
+                        // Calculate width and horizontal offset for overlapping events.
+                        val eventWidth = (1f / positionedEvent.colTotal) * maxWidth
+                        val startOffset = positionedEvent.col * eventWidth
+
+                        EventItem(
+                            event = event,
+                            modifier = Modifier
+                                .width(eventWidth)
+                                .height(eventHeight)
+                                .offset(x = startOffset, y = topOffset)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// --- REPLACE the old EventItem to better fit the new layout ---
+@Composable
+fun EventItem(
+    event: Event,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .padding(end = 2.dp, bottom = 2.dp) // Gutter between events
+            .background(event.color, shape = MaterialTheme.shapes.small)
+            .padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = event.title,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            fontSize = 12.sp
+        )
+        Text(
+            text = "${event.startTime} - ${event.endTime}",
+            color = Color.White,
+            fontSize = 10.sp
+        )
+        event.description?.let {
+            Text(
+                text = it,
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 10.sp
+            )
+        }
+    }
+}
+
+
+// --- REPLACE the event data classes and calculation logic ---
+// This logic is still complex, but it's now decoupled from the layout composition.
+
+private data class PositionedEvent(
+    val event: Event,
+    val date: LocalDate,
+    var col: Int = 0,
+    var colTotal: Int = 1
+)
+
+/**
+ * Calculates the horizontal position for each event to handle overlaps.
+ * This function remains complex as the logic for overlapping is non-trivial,
+ * but its output is now easy to use in the simplified WeekView.
+ */
+private fun calculateEventPositions(eventMap: Map<LocalDate, List<Event>>): List<PositionedEvent> {
+    val positionedEvents = mutableListOf<PositionedEvent>()
+    eventMap.forEach { (date, events) ->
+        val sortedEvents = events.sortedBy { it.startTime }
+        
+        // This list holds groups of events that overlap with each other.
+        val eventGroups = mutableListOf<MutableList<PositionedEvent>>()
+        
+        for (event in sortedEvents) {
+            val newPositionedEvent = PositionedEvent(event, date)
+            var placed = false
+            // Try to place the new event in an existing group of overlapping events.
+            for (group in eventGroups) {
+                val lastEventInGroup = group.maxByOrNull { it.event.endTime }!!
+                if (lastEventInGroup.event.endTime > newPositionedEvent.event.startTime) {
+                    group.add(newPositionedEvent)
+                    placed = true
+                    break
+                }
+            }
+            // If it doesn't overlap with any existing group, create a new one.
+            if (!placed) {
+                eventGroups.add(mutableListOf(newPositionedEvent))
+            }
+        }
+
+        // Within each group, figure out the column placement.
+        eventGroups.forEach { group ->
+            val columns = mutableListOf<MutableList<PositionedEvent>>()
+            for (positionedEvent in group) {
+                var placedInCol = false
+                for (column in columns) {
+                    if (column.last().event.endTime <= positionedEvent.event.startTime) {
+                        column.add(positionedEvent)
+                        placedInCol = true
+                        break
+                    }
+                }
+                if (!placedInCol) {
+                    columns.add(mutableListOf(positionedEvent))
+                }
+            }
+            
+            // Assign column index and total number of columns to each event in the group.
+            columns.forEachIndexed { colIndex, column ->
+                for (positionedEvent in column) {
+                    positionedEvent.col = colIndex
+                    positionedEvent.colTotal = columns.size
+                }
+            }
+            positionedEvents.addAll(group)
+        }
+    }
+    return positionedEvents
+}
+```
+
+### How to Integrate
+
+1.  In the full code from the previous response, delete the `WeekView`, `EventItem`, `PositionedEvent`, and `calculateEventPositions` functions.
+2.  Paste the new, simplified versions from the code block above in their place.
+3.  You don't need to change `MainActivity`, `CalendarScreen`, or `WeekCalendar`. The new `WeekView` is a drop-in replacement.
+
+This simplified version is much easier to read and maintain, as it uses a more conventional Compose layout structure while still providing the sophisticated overlap handling required for an accurate calendar replica.
