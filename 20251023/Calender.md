@@ -471,3 +471,469 @@ val sampleEvents: EventMap by lazy {
     )
 }
 ```
+
+
+# 2
+You are absolutely right. My apologies for that oversight. The issue is a classic Jetpack Compose layout problem where the scrollable modifier conflicts with a size modifier (`fillMaxSize`) in a way that prevents scrolling from being enabled.
+
+The problem is that `verticalScroll` needs to be applied to a container that has a **constrained height**, but the content *inside* it is taller. In the previous code, the components that needed to scroll were also the ones trying to be infinitely tall, creating a conflict.
+
+The solution is to restructure the layout so that the `TimeGutter` and the `HorizontalPager` are siblings in a `Row`, and apply the synchronized `verticalScroll` modifier to both the `TimeGutter` and the content *within* each pager page.
+
+Here is the corrected, fully-functional code. The primary changes are in the `WeekCalendar` composable.
+
+### The Corrected and Complete Code
+
+Copy and paste this entire block into a new file. This version fixes the scrolling issue while preserving all the features.
+
+```kotlin
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.time.temporal.WeekFields
+import java.util.Locale
+import kotlin.math.roundToInt
+
+// --- DATA CLASSES ---
+
+data class Event(
+    val id: String,
+    val title: String,
+    val startTime: LocalTime,
+    val endTime: LocalTime,
+    val color: Color,
+    val description: String? = null
+)
+
+typealias EventMap = Map<LocalDate, List<Event>>
+
+// --- MAIN ACTIVITY (Entry Point) ---
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    CalendarScreen(events = sampleEvents)
+                }
+            }
+        }
+    }
+}
+
+// --- TOP-LEVEL CALENDAR SCREEN ---
+
+@Composable
+fun CalendarScreen(events: EventMap) {
+    val weekFields = WeekFields.of(Locale.getDefault())
+    val today = LocalDate.now()
+    val startOfWeek = today.with(weekFields.dayOfWeek(), 1)
+    
+    WeekCalendar(
+        events = events,
+        startOfWeek = startOfWeek
+    )
+}
+
+// --- CORE CALENDAR COMPOSABLES ---
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun WeekCalendar(
+    events: EventMap,
+    startOfWeek: LocalDate
+) {
+    val pagerState = rememberPagerState(
+        initialPage = Int.MAX_VALUE / 2,
+        pageCount = { Int.MAX_VALUE }
+    )
+
+    // This derivedState helps update the header text when the page changes
+    val currentWeekStartDate by remember {
+        derivedStateOf {
+            val pageOffset = pagerState.currentPage - (Int.MAX_VALUE / 2)
+            startOfWeek.plusWeeks(pageOffset.toLong())
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        CalendarHeader(currentWeekStartDate)
+        WeekHeader(weekDays = (0..6).map { currentWeekStartDate.plusDays(it.toLong()) })
+
+        // This is the key change for fixing the scroll issue.
+        // We create a shared scroll state that will be used by the TimeGutter and the WeekView.
+        val verticalScrollState = rememberScrollState()
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            TimeGutter(
+                modifier = Modifier
+                    .width(60.dp)
+                    // The TimeGutter is now a scrollable column on its own.
+                    .verticalScroll(verticalScrollState)
+            )
+
+            HorizontalPager(
+                state = pagerState,
+                // The pager takes up the remaining width.
+                modifier = Modifier.weight(1f)
+            ) { page ->
+                val weekStartDate = startOfWeek.plusWeeks((page - (Int.MAX_VALUE / 2)).toLong())
+                val currentWeekDays = (0..6).map { weekStartDate.plusDays(it.toLong()) }
+                
+                WeekView(
+                    weekDays = currentWeekDays,
+                    eventMap = events,
+                    // The WeekView content is now also independently scrollable using the *same* shared state.
+                    // This is what synchronizes the scrolling.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(verticalScrollState)
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+fun CalendarHeader(startDate: LocalDate) {
+    val headerText = remember(startDate) {
+        val formatter = DateTimeFormatter.ofPattern("MMMM yyyy")
+        YearMonth.from(startDate).format(formatter)
+    }
+    
+    Text(
+        text = headerText,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, top = 16.dp, bottom = 16.dp),
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold
+    )
+}
+
+@Composable
+fun WeekHeader(weekDays: List<LocalDate>) {
+    val today = LocalDate.now()
+    val dayFormatter = DateTimeFormatter.ofPattern("E")
+    val dateFormatter = DateTimeFormatter.ofPattern("d")
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 60.dp) // Space for TimeGutter
+    ) {
+        weekDays.forEach { day ->
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = dayFormatter.format(day),
+                    fontSize = 12.sp,
+                    color = if (day == today) MaterialTheme.colorScheme.primary else Color.Gray
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(if (day == today) MaterialTheme.colorScheme.primary else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = dateFormatter.format(day),
+                        fontSize = 14.sp,
+                        fontWeight = if (day == today) FontWeight.Bold else FontWeight.Normal,
+                        color = if (day == today) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TimeGutter(
+    modifier: Modifier = Modifier,
+    hourHeight: Dp = 60.dp
+) {
+    // This Column now has its own modifier and contains the tall content.
+    Column(modifier = modifier) {
+        (0..23).forEach { hour ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(hourHeight),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                if (hour > 0) {
+                    val amPm = if (hour < 12) "AM" else "PM"
+                    val displayHour = when {
+                        hour == 0 -> 12
+                        hour > 12 -> hour - 12
+                        else -> hour
+                    }
+                    Text(
+                        text = "$displayHour $amPm",
+                        modifier = Modifier.padding(top = 4.dp),
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun WeekView(
+    weekDays: List<LocalDate>,
+    eventMap: EventMap,
+    modifier: Modifier = Modifier,
+    hourHeight: Dp = 60.dp
+) {
+    val numDays = weekDays.size
+    val dividerColor = Color.LightGray
+
+    Layout(
+        content = {
+            weekDays.forEach { day ->
+                val eventsForDay = eventMap[day].orEmpty()
+                eventsForDay.forEach { event ->
+                    Box(modifier = Modifier.eventData(event)) {
+                        EventItem(event = event)
+                    }
+                }
+            }
+        },
+        modifier = modifier.drawBehind {
+            (0..23).forEach { hour ->
+                val y = hour * hourHeight.toPx()
+                drawLine(
+                    color = dividerColor,
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1f
+                )
+            }
+            (1 until numDays).forEach { dayIndex ->
+                val x = dayIndex * size.width / numDays
+                drawLine(
+                    color = dividerColor,
+                    start = Offset(x, 0f),
+                    end = Offset(x, size.height),
+                    strokeWidth = 1f
+                )
+            }
+        }
+    ) { measurables, constraints ->
+        val dayWidth = constraints.maxWidth / numDays
+        val positionedEvents = calculateEventPositions(eventMap.filterKeys { it in weekDays })
+        
+        val placeables = measurables.map { measurable ->
+            val eventData = measurable.parentData as EventData
+            val positionedEvent = positionedEvents.find { it.event.id == eventData.event.id }
+            
+            val eventDurationMinutes = ChronoUnit.MINUTES.between(eventData.event.startTime, eventData.event.endTime)
+            val eventHeight = (eventDurationMinutes / 60f * hourHeight.toPx()).roundToInt()
+            
+            val eventWidth = if (positionedEvent != null) {
+                (dayWidth * (1f / positionedEvent.colTotal)).roundToInt()
+            } else {
+                dayWidth
+            }
+            
+            measurable.measure(
+                constraints.copy(
+                    minWidth = eventWidth,
+                    maxWidth = eventWidth,
+                    minHeight = eventHeight,
+                    maxHeight = eventHeight
+                )
+            )
+        }
+
+        val totalHeight = (24 * hourHeight.toPx()).roundToInt()
+        
+        layout(constraints.maxWidth, totalHeight) {
+            placeables.forEach { placeable ->
+                val eventData = placeable.parentData as EventData
+                val positionedEvent = positionedEvents.find { it.event.id == eventData.event.id }
+
+                if (positionedEvent != null) {
+                    val dayIndex = weekDays.indexOf(positionedEvent.date)
+                    val x = dayIndex * dayWidth + (positionedEvent.col * dayWidth / positionedEvent.colTotal)
+                    val y = (eventData.event.startTime.toSecondOfDay() / 3600f * hourHeight.toPx()).roundToInt()
+                    
+                    placeable.place(x, y)
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun EventItem(event: Event) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(end = 2.dp, bottom = 2.dp)
+            .background(event.color, shape = MaterialTheme.shapes.small)
+            .padding(horizontal = 4.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = event.title,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            fontSize = 12.sp
+        )
+        Text(
+            text = "${event.startTime} - ${event.endTime}",
+            color = Color.White,
+            fontSize = 10.sp
+        )
+        event.description?.let {
+            Text(
+                text = it,
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 10.sp
+            )
+        }
+    }
+}
+
+// --- EVENT LAYOUT LOGIC ---
+
+private data class PositionedEvent(
+    val event: Event,
+    val date: LocalDate,
+    var col: Int = 0,
+    var colTotal: Int = 1
+)
+
+private data class EventData(val event: Event)
+private class EventDataModifier(val event: Event) : androidx.compose.ui.layout.ParentDataModifier {
+    override fun modifyParentData(parentData: Any?) = EventData(event)
+}
+private fun Modifier.eventData(event: Event) = this.then(EventDataModifier(event))
+
+private fun calculateEventPositions(eventMap: Map<LocalDate, List<Event>>): List<PositionedEvent> {
+    val positionedEvents = mutableListOf<PositionedEvent>()
+    eventMap.forEach { (date, events) ->
+        val sortedEvents = events.sortedBy { it.startTime }
+        val groups = mutableListOf<MutableList<PositionedEvent>>()
+        
+        for (event in sortedEvents) {
+            val newPositionedEvent = PositionedEvent(event, date)
+            var placed = false
+            for (group in groups) {
+                val lastEventInGroup = group.last()
+                if (lastEventInGroup.event.endTime > newPositionedEvent.event.startTime) {
+                    group.add(newPositionedEvent)
+                    placed = true
+                    break
+                }
+            }
+            if (!placed) {
+                groups.add(mutableListOf(newPositionedEvent))
+            }
+        }
+
+        groups.forEach { group ->
+            val columns = mutableListOf<MutableList<PositionedEvent>>()
+            for (positionedEvent in group) {
+                var placedInCol = false
+                for (column in columns) {
+                    if (column.last().event.endTime <= positionedEvent.event.startTime) {
+                        column.add(positionedEvent)
+                        placedInCol = true
+                        break
+                    }
+                }
+                if (!placedInCol) {
+                    columns.add(mutableListOf(positionedEvent))
+                }
+            }
+            
+            columns.forEachIndexed { colIndex, column ->
+                for (positionedEvent in column) {
+                    positionedEvent.col = colIndex
+                    positionedEvent.colTotal = columns.size
+                }
+            }
+            positionedEvents.addAll(group)
+        }
+    }
+    return positionedEvents
+}
+
+
+// --- PREVIEW AND SAMPLE DATA ---
+
+@Preview(showBackground = true)
+@Composable
+fun CalendarScreenPreview() {
+    MaterialTheme {
+        CalendarScreen(events = sampleEvents)
+    }
+}
+
+val sampleEvents: EventMap by lazy {
+    val today = LocalDate.now()
+    mapOf(
+        today to listOf(
+            Event("1", "Morning Meeting", LocalTime.of(9, 0), LocalTime.of(10, 0), Color(0xFFF4511E)),
+            Event("2", "Team Sync", LocalTime.of(9, 30), LocalTime.of(10, 30), Color(0xFF039BE5)),
+            Event("3", "Project Kick-off", LocalTime.of(9, 15), LocalTime.of(11, 0), Color(0xFF7986CB)),
+            Event("4", "Lunch with Team", LocalTime.of(12, 0), LocalTime.of(13, 0), Color(0xFF33B679)),
+            Event("5", "Performance Review", LocalTime.of(14, 0), LocalTime.of(15, 30), Color(0xFF8E24AA))
+        ),
+        today.plusDays(1) to listOf(
+            Event("6", "Design Review", LocalTime.of(10, 0), LocalTime.of(11, 30), Color(0xFFF6BF26)),
+            Event("7", "Client Call", LocalTime.of(15, 0), LocalTime.of(16, 0), Color(0xFF039BE5))
+        ),
+        today.minusDays(2) to listOf(
+            Event("8", "Dentist Appointment", LocalTime.of(11, 0), LocalTime.of(12, 0), Color(0xFFE67C73), "Room 201")
+        )
+    )
+}
+```
