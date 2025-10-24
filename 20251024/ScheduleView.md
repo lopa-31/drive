@@ -1,90 +1,172 @@
-Of course, here is a simpler approach to creating a schedule view for your attendance app using basic `Row` and `Column` composables in Jetpack Compose. This method avoids the complexity of `Canvas` and provides a clean, vertically scrollable timeline.
+Of course. I understand you're looking for a vertically scrolling, day-by-day schedule view, much like the Google Calendar app's agenda or schedule view. Here is a solution that achieves this by displaying dates on the left and corresponding attendance records or status (like "Absent" or "Holiday") on the right for each day.
 
-### Conceptual Overview
+This approach uses a `LazyColumn` to efficiently display a list of days, ensuring smooth scrolling even over a long period. Each row in the list represents a single day.
 
-The core idea is to create a vertical timeline representing the 24 hours of the day. This will be a `LazyColumn` for performance. Inside it, a `Row` will structure the layout into two main parts: the time gutter on the left and the attendance items on the right.
+### 1. Data Models for the Schedule
 
-Attendance items will be placed as blocks on this timeline, positioned and sized vertically according to their start and end times.
-
-### 1. Attendance Data Model
-
-First, ensure you have a data class to represent your attendance records.
+First, let's define the data structures. We need a way to represent not just an attendance item, but also the status of an entire day, which could have multiple attendance records, be a holiday, or an absence.
 
 ```kotlin
+import java.time.LocalDate
 import java.time.LocalTime
 
-data class AttendanceItem(
+// Represents a single check-in/check-out event
+data class AttendanceEvent(
     val inTimeStamp: LocalTime,
     val outTimeStamp: LocalTime,
-    val title: String // e.g., "Work Shift", "Project Meeting"
+    val description: String // e.g., "Work Shift"
+)
+
+// Represents the status for a given day
+sealed class DayStatus {
+    data class Attended(val events: List<AttendanceEvent>) : DayStatus()
+    data object Absent : DayStatus()
+    data class Holiday(val name: String) : DayStatus()
+}
+
+// A wrapper class combining a date with its status
+data class ScheduleDay(
+    val date: LocalDate,
+    val status: DayStatus
 )
 ```
 
-### 2. The Main Schedule Composable
+### 2. The Main Schedule Screen Composable
 
-This composable will build the schedule view. It consists of a `LazyColumn` for the hours of the day and places the attendance items on top.
+This is the top-level composable that will display the list of days. It uses a `LazyColumn` for performance, which only composes and lays out the items currently visible on the screen.
 
 ```kotlin
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Divider
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import java.time.LocalDate
 import java.time.LocalTime
-import java.time.temporal.ChronoUnit
 
 @Composable
-fun AttendanceScheduleView(items: List<AttendanceItem>) {
-    val hourHeight = 60.dp // Height representing one hour
-
+fun AttendanceScheduleScreen(scheduleDays: List<ScheduleDay>) {
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
+        contentPadding = PaddingValues(vertical = 16.dp)
     ) {
-        // We use a Box to allow overlapping the timeline with event blocks
-        item {
-            Box(modifier = Modifier.fillMaxWidth()) {
-                // Background Timeline (Hours)
-                Timeline(hourHeight = hourHeight)
+        items(scheduleDays) { day ->
+            DayRow(day = day)
+        }
+    }
+}
+```
 
-                // Attendance Event Blocks
-                items.forEach { item ->
-                    AttendanceBlock(
-                        item = item,
-                        hourHeight = hourHeight
-                    )
+### 3. The `DayRow` Composable
+
+This composable is responsible for rendering a single row in our list, which corresponds to one day. It creates the side-by-side layout with the date on the left and the day's status on the right.
+
+```kotlin
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import java.time.format.TextStyle
+import java.util.Locale
+
+@Composable
+fun DayRow(day: ScheduleDay) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        // Left side: Date
+        Column(
+            modifier = Modifier.width(60.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = day.date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
+                style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+                text = day.date.dayOfMonth.toString(),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        // Spacer
+        Spacer(modifier = Modifier.width(16.dp))
+
+        // Right side: Status (Attendance, Absent, or Holiday)
+        Column(modifier = Modifier.weight(1f)) {
+            when (val status = day.status) {
+                is DayStatus.Attended -> {
+                    // Display each attendance event for the day
+                    status.events.forEach { event ->
+                        AttendanceEventCard(event = event)
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+                is DayStatus.Absent -> {
+                    Text(text = "Absent", color = Color.Red)
+                }
+                is DayStatus.Holiday -> {
+                    Text(text = "Holiday: ${status.name}", color = Color.Gray)
                 }
             }
         }
     }
 }
+```
+
+### 4. The `AttendanceEventCard` Composable
+
+This composable renders a single attendance event in a visually appealing card, showing the in/out times and description.
+
+```kotlin
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import java.time.format.DateTimeFormatter
 
 @Composable
-private fun Timeline(hourHeight: Dp) {
-    Column {
-        (0..23).forEach { hour ->
-            Row(
+fun AttendanceEventCard(event: AttendanceEvent) {
+    val timeFormatter = DateTimeFormatter.ofPattern("hh:mm a")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Row(modifier = Modifier.padding(12.dp)) {
+            // You can add a decorative color bar here if you like
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(hourHeight)
-            ) {
+                    .width(4.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
                 Text(
-                    text = String.format("%02d:00", hour),
-                    modifier = Modifier.width(50.dp)
+                    text = event.description,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Divider(
-                    color = Color.LightGray,
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(1.dp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "${event.inTimeStamp.format(timeFormatter)} - ${event.outTimeStamp.format(timeFormatter)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
                 )
             }
         }
@@ -92,71 +174,49 @@ private fun Timeline(hourHeight: Dp) {
 }
 ```
 
-### 3. The Attendance Item Block
+### How to Use It in Your App
 
-This is the key composable that represents a single attendance record. It's placed inside the `Box` from the previous step. Its vertical position (`offset`) and `height` are calculated based on the timestamps.
-
-```kotlin
-@Composable
-private fun AttendanceBlock(
-    item: AttendanceItem,
-    hourHeight: Dp
-) {
-    // Calculate duration in minutes for height
-    val durationInMinutes = ChronoUnit.MINUTES.between(item.inTimeStamp, item.outTimeStamp)
-    val itemHeight = (durationInMinutes / 60f).dp * hourHeight
-
-    // Calculate vertical offset from the top
-    val offsetInMinutes = item.inTimeStamp.hour * 60 + item.inTimeStamp.minute
-    val topOffset = (offsetInMinutes / 60f).dp * hourHeight
-
-    Box(
-        modifier = Modifier
-            .padding(
-                top = topOffset,
-                start = 60.dp // To the right of the timeline text
-            )
-            .fillMaxWidth()
-            .height(itemHeight)
-            .background(Color(0xFFE0E0FF)) // A light blue/purple color
-            .padding(4.dp)
-    ) {
-        Text(
-            text = "${item.title}\n${item.inTimeStamp} - ${item.outTimeStamp}",
-            color = Color.Black
-        )
-    }
-}
-```
-
-### How to Use It
-
-You can now use the `AttendanceScheduleView` composable in your screen and pass it a list of your attendance items.
+You can now put everything together in your main screen composable. You would fetch your attendance data and transform it into a `List<ScheduleDay>`.
 
 ```kotlin
 @Composable
-fun MyAttendanceScreen() {
-    // Sample data for demonstration
-    val sampleAttendance = listOf(
-        AttendanceItem(
-            inTimeStamp = LocalTime.of(9, 0),
-            outTimeStamp = LocalTime.of(12, 30),
-            title = "Morning Shift"
+fun MyAttendanceRecordScreen() {
+    // --- Sample Data ---
+    // In a real app, you would generate this list from your database or API
+    // for a given date range.
+    val scheduleData = listOf(
+        ScheduleDay(
+            date = LocalDate.now(),
+            status = DayStatus.Attended(events = listOf(
+                AttendanceEvent(LocalTime.of(9, 5), LocalTime.of(12, 30), "Morning Shift"),
+                AttendanceEvent(LocalTime.of(13, 15), LocalTime.of(17, 45), "Afternoon Shift")
+            ))
         ),
-        AttendanceItem(
-            inTimeStamp = LocalTime.of(13, 30),
-            outTimeStamp = LocalTime.of(17, 0),
-            title = "Afternoon Shift"
+        ScheduleDay(
+            date = LocalDate.now().minusDays(1),
+            status = DayStatus.Absent
         ),
-        AttendanceItem(
-            inTimeStamp = LocalTime.of(11, 0),
-            outTimeStamp = LocalTime.of(11, 45),
-            title = "Team Meeting"
+        ScheduleDay(
+            date = LocalDate.now().minusDays(2),
+            status = DayStatus.Attended(events = listOf(
+                AttendanceEvent(LocalTime.of(10, 0), LocalTime.of(18, 0), "Full Day")
+            ))
+        ),
+        ScheduleDay(
+            date = LocalDate.now().minusDays(3),
+            status = DayStatus.Holiday(name = "Public Holiday")
+        ),
+        ScheduleDay(
+            date = LocalDate.now().minusDays(4),
+            status = DayStatus.Attended(events = listOf(
+                AttendanceEvent(LocalTime.of(8, 30), LocalTime.of(12, 30), "Morning Work")
+            ))
         )
     )
+    // --- End Sample Data ---
 
-    AttendanceScheduleView(items = sampleAttendance)
+    AttendanceScheduleScreen(scheduleDays = scheduleData)
 }
 ```
 
-This approach provides a clear, simple, and maintainable way to display a schedule view without the complexities of custom drawing on a `Canvas`. It leverages standard layout components, making it easier to understand and extend.
+This structure gives you the exact Google Calendar-style schedule view you wanted, providing a clear, scrollable history of attendance records, absences, and holidays.
