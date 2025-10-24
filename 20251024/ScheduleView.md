@@ -1,104 +1,162 @@
-## Creating a Google Calendar-like Schedule View in Jetpack Compose
+Of course, here is a simpler approach to creating a schedule view for your attendance app using basic `Row` and `Column` composables in Jetpack Compose. This method avoids the complexity of `Canvas` and provides a clean, vertically scrollable timeline.
 
-Crafting a dynamic and visually intuitive schedule view, reminiscent of Google Calendar, is an achievable task in Jetpack Compose. This allows for a clear presentation of attendance records, plotting in-and-out timestamps on a chronological canvas.
+### Conceptual Overview
 
-To build this, you'll leverage the power of Jetpack Compose's drawing capabilities, specifically the `Canvas` composable. This provides the flexibility to draw the time slots, event blocks, and current time indicators precisely to your design requirements.
+The core idea is to create a vertical timeline representing the 24 hours of the day. This will be a `LazyColumn` for performance. Inside it, a `Row` will structure the layout into two main parts: the time gutter on the left and the attendance items on the right.
 
-### Core Components of the Schedule View
+Attendance items will be placed as blocks on this timeline, positioned and sized vertically according to their start and end times.
 
-A successful schedule view will consist of several key components working in concert:
+### 1. Attendance Data Model
 
-*   **A Data Model:** You'll need a simple data class to represent your attendance items, holding the essential `date`, `inTimeStamp`, and `outTimeStamp`.
-*   **The Time Gutter:** This is the vertical column on the side that displays the hours of the day.
-*   **The Schedule Grid:** The main area where the attendance blocks will be drawn, with horizontal lines representing time intervals.
-*   **The Attendance Items:** These are the visual blocks representing the duration of an attendance record, positioned and sized based on their in and out times.
-
-### Implementation Steps
-
-Here is a conceptual breakdown of the code structure to guide you through the implementation:
-
-#### 1. Define the Attendance Data Class
-
-Start by creating a data class to hold your attendance information:
+First, ensure you have a data class to represent your attendance records.
 
 ```kotlin
+import java.time.LocalTime
+
 data class AttendanceItem(
-    val date: LocalDate,
     val inTimeStamp: LocalTime,
-    val outTimeStamp: LocalTime
+    val outTimeStamp: LocalTime,
+    val title: String // e.g., "Work Shift", "Project Meeting"
 )
 ```
 
-#### 2. The Main Composable
+### 2. The Main Schedule Composable
 
-Next, create the main composable that will house your schedule view. This will manage the state, including the list of attendance items.
+This composable will build the schedule view. It consists of a `LazyColumn` for the hours of the day and places the attendance items on top.
 
 ```kotlin
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Divider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import java.time.LocalTime
+import java.time.temporal.ChronoUnit
+
 @Composable
-fun AttendanceScheduleScreen(attendanceItems: List<AttendanceItem>) {
-    // A scrollable container for the schedule
-    val scrollState = rememberScrollState()
-    Box(modifier = Modifier.verticalScroll(scrollState)) {
-        // Your schedule view implementation
-        ScheduleView(attendanceItems = attendanceItems)
+fun AttendanceScheduleView(items: List<AttendanceItem>) {
+    val hourHeight = 60.dp // Height representing one hour
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        // We use a Box to allow overlapping the timeline with event blocks
+        item {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                // Background Timeline (Hours)
+                Timeline(hourHeight = hourHeight)
+
+                // Attendance Event Blocks
+                items.forEach { item ->
+                    AttendanceBlock(
+                        item = item,
+                        hourHeight = hourHeight
+                    )
+                }
+            }
+        }
     }
-}```
+}
 
-#### 3. The Schedule View with Canvas
-
-The `ScheduleView` composable is where the drawing magic happens. You'll use a `Canvas` to draw the grid lines and the attendance blocks.
-
-```kotlin
 @Composable
-private fun ScheduleView(attendanceItems: List<AttendanceItem>) {
-    val hourHeight = 60.dp // The height of each hour block
-
-    Canvas(modifier = Modifier
-        .fillMaxSize()
-        .height(hourHeight * 24)) { // Canvas height for 24 hours
-        // Draw the time gutter and grid lines
-        for (hour in 0..24) {
-            drawLine(
-                color = Color.LightGray,
-                start = Offset(0f, hour * hourHeight.toPx()),
-                end = Offset(size.width, hour * hourHeight.toPx())
-            )
-            drawContext.canvas.nativeCanvas.apply {
-                drawText(
-                    "$hour:00",
-                    0f,
-                    hour * hourHeight.toPx() + 15.dp.toPx(),
-                    Paint().apply {
-                        color = android.graphics.Color.BLACK
-                        textSize = 12.dp.toPx()
-                    }
+private fun Timeline(hourHeight: Dp) {
+    Column {
+        (0..23).forEach { hour ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(hourHeight)
+            ) {
+                Text(
+                    text = String.format("%02d:00", hour),
+                    modifier = Modifier.width(50.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Divider(
+                    color = Color.LightGray,
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(1.dp)
                 )
             }
         }
-
-        // Draw the attendance items
-        attendanceItems.forEach { item ->
-            val topOffset = item.inTimeStamp.hour * hourHeight.toPx() +
-                    item.inTimeStamp.minute / 60f * hourHeight.toPx()
-            val bottomOffset = item.outTimeStamp.hour * hourHeight.toPx() +
-                    item.outTimeStamp.minute / 60f * hourHeight.toPx()
-
-            drawRect(
-                color = Color.Blue, // Customize the color
-                topLeft = Offset(80.dp.toPx(), topOffset),
-                size = Size(size.width - 80.dp.toPx(), bottomOffset - topOffset)
-            )
-        }
     }
-}```
+}
+```
 
-### Further Customization and Considerations
+### 3. The Attendance Item Block
 
-This basic implementation can be extended and refined:
+This is the key composable that represents a single attendance record. It's placed inside the `Box` from the previous step. Its vertical position (`offset`) and `height` are calculated based on the timestamps.
 
-*   **Dynamic Sizing:** Adjust the `hourHeight` to allow for zooming in and out of the schedule.
-*   **Current Time Indicator:** Draw a horizontal line on the canvas to represent the current time.
-*   **Handling Overlapping Events:** Implement logic to visually distinguish or stack attendance items that overlap in time. Tutorials on creating custom layouts in Jetpack Compose can provide in-depth guidance on this.
-*   **Using Libraries:** For more complex calendar functionalities, consider exploring existing libraries like `ComposeCalendar` or `Kalendar`. These libraries offer pre-built components and state management for features like date selection and different view modes (day, week, month).
+```kotlin
+@Composable
+private fun AttendanceBlock(
+    item: AttendanceItem,
+    hourHeight: Dp
+) {
+    // Calculate duration in minutes for height
+    val durationInMinutes = ChronoUnit.MINUTES.between(item.inTimeStamp, item.outTimeStamp)
+    val itemHeight = (durationInMinutes / 60f).dp * hourHeight
 
-By following these steps and exploring the customization options, you can create a highly effective and visually appealing schedule view for your attendance application in Jetpack Compose.
+    // Calculate vertical offset from the top
+    val offsetInMinutes = item.inTimeStamp.hour * 60 + item.inTimeStamp.minute
+    val topOffset = (offsetInMinutes / 60f).dp * hourHeight
+
+    Box(
+        modifier = Modifier
+            .padding(
+                top = topOffset,
+                start = 60.dp // To the right of the timeline text
+            )
+            .fillMaxWidth()
+            .height(itemHeight)
+            .background(Color(0xFFE0E0FF)) // A light blue/purple color
+            .padding(4.dp)
+    ) {
+        Text(
+            text = "${item.title}\n${item.inTimeStamp} - ${item.outTimeStamp}",
+            color = Color.Black
+        )
+    }
+}
+```
+
+### How to Use It
+
+You can now use the `AttendanceScheduleView` composable in your screen and pass it a list of your attendance items.
+
+```kotlin
+@Composable
+fun MyAttendanceScreen() {
+    // Sample data for demonstration
+    val sampleAttendance = listOf(
+        AttendanceItem(
+            inTimeStamp = LocalTime.of(9, 0),
+            outTimeStamp = LocalTime.of(12, 30),
+            title = "Morning Shift"
+        ),
+        AttendanceItem(
+            inTimeStamp = LocalTime.of(13, 30),
+            outTimeStamp = LocalTime.of(17, 0),
+            title = "Afternoon Shift"
+        ),
+        AttendanceItem(
+            inTimeStamp = LocalTime.of(11, 0),
+            outTimeStamp = LocalTime.of(11, 45),
+            title = "Team Meeting"
+        )
+    )
+
+    AttendanceScheduleView(items = sampleAttendance)
+}
+```
+
+This approach provides a clear, simple, and maintainable way to display a schedule view without the complexities of custom drawing on a `Canvas`. It leverages standard layout components, making it easier to understand and extend.
